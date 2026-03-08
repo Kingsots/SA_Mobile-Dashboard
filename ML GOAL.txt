@@ -1,0 +1,181 @@
+GOAL
+
+Deploy your current trading bot to an AWS EC2 Ubuntu 22.04 instance, configure it as a persistent background service, and confirm that:
+
+All APScheduler jobs fire automatically.
+
+Tiingo + ML signals run in the cloud.
+
+Telegram receives alerts without manual triggers.
+
+🪜 PHASE 1 — LAUNCH THE SERVER
+1️⃣ Log into AWS Console
+
+Go to: https://console.aws.amazon.com/ec2
+
+On the left sidebar, click Instances → Launch Instances.
+
+2️⃣ Configure Instance
+Setting	Value
+Name	OptiCore-TradingBot
+AMI	Ubuntu Server 22.04 LTS (64-bit x86)
+Instance Type	t3.micro (free-tier eligible, enough for this stage)
+Key Pair	Create new (name: opticore-key) and download the .pem file
+Network Settings	Allow SSH (port 22)
+Storage	8–16 GB (default is fine)
+Launch	✅ Click Launch Instance
+🧩 PHASE 2 — CONNECT TO YOUR SERVER
+
+Once it shows Status: Running, do this:
+
+1️⃣ In your terminal (or PowerShell):
+
+Move to your key’s folder and fix permissions:
+
+cd Downloads
+chmod 400 opticore-key.pem
+
+2️⃣ Copy your instance’s Public IPv4 Address (from the AWS console).
+3️⃣ Connect via SSH:
+ssh -i "opticore-key.pem" ubuntu@<your-ec2-ip>
+
+
+If you see:
+
+Welcome to Ubuntu 22.04 LTS
+
+
+You’re in. ✅
+
+⚙️ PHASE 3 — SET UP THE ENVIRONMENT
+
+Now, we’ll replicate your local setup.
+
+1️⃣ Update packages
+sudo apt update && sudo apt upgrade -y
+
+2️⃣ Install Python 3.11 and dependencies
+sudo apt install -y python3.11 python3.11-venv python3-pip git
+
+3️⃣ Clone your trading bot repo
+
+If your code is on GitHub:
+
+git clone https://github.com/<your-username>/<repo-name>.git
+cd <repo-name>
+
+
+If not, you can upload it manually later using WinSCP or scp — I’ll show that below.
+
+4️⃣ Create a virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+5️⃣ Install dependencies
+pip install -r requirements.txt
+
+6️⃣ Add your .env file
+
+Create it:
+
+nano .env
+
+
+Paste in your existing API keys and tokens (Tiingo, Telegram, etc.), then Ctrl+O, Enter, Ctrl+X to save.
+
+🧠 PHASE 4 — ENABLE AUTONOMOUS EXECUTION
+
+You want the bot to run forever, even after reboot.
+We’ll use systemd (Linux service manager).
+
+1️⃣ Create a service file
+sudo nano /etc/systemd/system/opticore.service
+
+
+Paste this in (adjust path if needed):
+
+[Unit]
+Description=OptiCore Trading Bot Service
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/<repo-name>
+Environment="PATH=/home/ubuntu/<repo-name>/.venv/bin"
+ExecStart=/home/ubuntu/<repo-name>/.venv/bin/python async_scheduler.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
+
+Save and exit.
+
+2️⃣ Enable and start the service
+sudo systemctl daemon-reload
+sudo systemctl enable opticore.service
+sudo systemctl start opticore.service
+
+3️⃣ Check status
+sudo systemctl status opticore.service
+
+
+You should see output like:
+
+Active: active (running)
+
+
+If yes → ✅ Your trading bot is now a self-healing background process.
+Even after reboot, it restarts automatically.
+
+📡 PHASE 5 — VERIFY & MONITOR
+1️⃣ Check logs
+journalctl -u opticore.service -f
+
+
+You’ll see:
+
+✅ Tiingo ML Pipeline Successfully Started!
+Status: 🟢 ACTIVE
+Next 30min fetch: ...
+
+2️⃣ Check Telegram
+
+Wait for your first job cycle — you should get the same alert messages your local system produced.
+
+3️⃣ (Optional) Add a heartbeat
+
+Add this to your scheduler or a new job:
+
+send_telegram_message("✅ Heartbeat: Cloud instance alive.")
+
+
+to confirm uptime every few hours.
+
+🧰 OPTIONAL — TRANSFER LOCAL FILES (if not in Git)
+
+If your code isn’t on GitHub:
+
+In PowerShell, from your project directory:
+
+scp -i "opticore-key.pem" -r * ubuntu@<your-ec2-ip>:/home/ubuntu/
+
+
+Then SSH in again — your files will be there.
+
+🎯 FINAL STATE
+
+Once complete:
+
+Bot runs 24/7 on cloud.
+
+APScheduler triggers jobs automatically.
+
+Telegram alerts confirm health.
+
+Logs available via journalctl.
+
+Auto-restarts on crash or reboot.
+
+This will instantly bring your uptime from 40% → 85–90%, matching the plan in your system analysis doc

@@ -1,0 +1,1 @@
+SELECT COUNT(*) as total, SUM(CASE WHEN signal=1 THEN 1 ELSE 0 END) as buy, SUM(CASE WHEN signal=-1 THEN 1 ELSE 0 END) as sell, SUM(CASE WHEN signal=0 THEN 1 ELSE 0 END) as neutral FROM signals WHERE timestamp >= '2026-02-18 00:00:00';

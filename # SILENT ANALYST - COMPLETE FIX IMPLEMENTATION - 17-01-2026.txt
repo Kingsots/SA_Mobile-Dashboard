@@ -1,0 +1,746 @@
+# SILENT ANALYST - COMPLETE FIX IMPLEMENTATION PLAN
+**Date:** January 17, 2026  
+**Status:** Ready for Implementation  
+**Total Estimated Time:** 65 minutes (Critical Fixes Only)
+
+---
+
+## EXECUTIVE SUMMARY
+
+Based on Copilot's comprehensive audit, we have **3 critical fixes** and **1 investigation** needed:
+
+| Fix | Priority | Time | Impact |
+|-----|----------|------|--------|
+| **Fix #1: Market Hours Gate** | 🔴 CRITICAL | 15 min | Stops weekend operation |
+| **Fix #2: Event Deduplication** | 🔴 CRITICAL | 30 min | Prevents 10x signals |
+| **Fix #3: Data Freshness** | ⚠️ HIGH | 20 min | Blocks stale analysis |
+| **Investigation: XAUUSD** | ⚠️ HIGH | 30-60 min | Enables gold trading |
+
+**Strategy:** Implement all 3 critical fixes in **one deployment** → Test → Then investigate XAUUSD separately.
+
+---
+
+## IMPLEMENTATION PHASES
+
+### PHASE 1: MARKET HOURS GATE (15 minutes)
+**Goal:** Stop system from running on weekends (Friday 22:00 - Sunday 22:00 UTC)
+
+#### Step 1.1: Update `core/config.py` (5 minutes)
+
+**Location:** Add after line 200 (after `EVENT_COOLDOWN_SECONDS`)
+
+```python
+# ============================================================================
+# MARKET HOURS CONFIGURATION
+# ============================================================================
+# Forex market operates Sunday 22:00 UTC to Friday 22:00 UTC
+MARKET_OPEN_DAY = 6          # Sunday (0=Monday, 6=Sunday)
+MARKET_OPEN_HOUR = 22        # 22:00 UTC
+MARKET_CLOSE_DAY = 4         # Friday
+MARKET_CLOSE_HOUR = 22       # 22:00 UTC
+
+@classmethod
+def is_market_open(cls) -> bool:
+    """
+    Check if forex market is currently open.
+    
+    Forex trading hours: Sunday 22:00 UTC → Friday 22:00 UTC
+    Market closed: Friday 22:00 UTC → Sunday 22:00 UTC (entire weekend)
+    
+    Returns:
+        bool: True if market is open, False if closed
+    """
+    from datetime import datetime, timezone
+    
+    now = datetime.now(timezone.utc)
+    day = now.weekday()  # 0=Monday, 4=Friday, 5=Saturday, 6=Sunday
+    hour = now.hour
+    
+    # Saturday: Always closed
+    if day == 5:
+        return False
+    
+    # Sunday: Opens at 22:00 UTC
+    if day == 6:
+        return hour >= cls.MARKET_OPEN_HOUR
+    
+    # Friday: Closes at 22:00 UTC
+    if day == 4:
+        return hour < cls.MARKET_CLOSE_HOUR
+    
+    # Monday-Thursday: Always open
+    return True
+
+@classmethod
+def get_next_market_open(cls) -> 'datetime':
+    """
+    Get the timestamp of the next market open.
+    
+    Returns:
+        datetime: Next market open time (Sunday 22:00 UTC)
+    """
+    from datetime import datetime, timezone, timedelta
+    
+    now = datetime.now(timezone.utc)
+    day = now.weekday()
+    
+    # If Saturday
+    if day == 5:
+        # Next open: Sunday at 22:00
+        days_until_sunday = 1
+        next_open = (now + timedelta(days=days_until_sunday)).replace(
+            hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0
+        )
+        return next_open
+    
+    # If Sunday before 22:00
+    if day == 6 and now.hour < cls.MARKET_OPEN_HOUR:
+        # Opens today at 22:00
+        return now.replace(hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0)
+    
+    # If Friday after 22:00
+    if day == 4 and now.hour >= cls.MARKET_CLOSE_HOUR:
+        # Next open: Sunday at 22:00 (2 days later)
+        next_open = (now + timedelta(days=2)).replace(
+            hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0
+        )
+        return next_open
+    
+    # Market already open
+    return now
+```
+
+#### Step 1.2: Update `async_scheduler.py` - Add Market Gate to Event Monitor Jobs (10 minutes)
+
+**Location 1:** In `event_monitor_job()` method (around line 380, at the very start)
+
+**Find this line:**
+```python
+async def event_monitor_job(self, interval: str = '4h'):
+    """Monitor for market events at specified interval."""
+```
+
+**Replace the entire method with:**
+```python
+async def event_monitor_job(self, interval: str = '4h'):
+    """Monitor for market events at specified interval."""
+    
+    # ============================================================================
+    # MARKET HOURS GATE - Skip if market is closed
+    # ============================================================================
+    if not Config.is_market_open():
+        next_open = Config.get_next_market_open()
+        logger.info(
+            f"🚫 Market CLOSED - Skipping event monitor ({interval}). "
+            f"Next open: {next_open.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        return  # Exit early - do not process events on closed market
+    
+    # Market is open - proceed with normal event detection
+    logger.debug(f"✅ Market OPEN - Running event monitor ({interval})")
+    
+    # Rest of existing code continues here...
+    symbols = Config.get_symbol_list()
+    
+    for symbol in symbols:
+        try:
+            # Load OHLCV data
+            df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+            
+            if df is None or df.empty:
+                logger.warning(f"No OHLCV data for {symbol} {interval}")
+                continue
+            
+            # ... (rest of existing event_monitor_job code stays the same)
+```
+
+**Location 2:** In `time_based_fallback_job()` method (around line 480, at the very start)
+
+**Find this line:**
+```python
+async def time_based_fallback_job(self, interval: str = '4h'):
+    """Generate signals if no events detected."""
+```
+
+**Add market gate at the start:**
+```python
+async def time_based_fallback_job(self, interval: str = '4h'):
+    """Generate signals if no events detected."""
+    
+    # ============================================================================
+    # MARKET HOURS GATE - Skip if market is closed
+    # ============================================================================
+    if not Config.is_market_open():
+        next_open = Config.get_next_market_open()
+        logger.info(
+            f"🚫 Market CLOSED - Skipping time-based fallback ({interval}). "
+            f"Next open: {next_open.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+        return  # Exit early
+    
+    logger.debug(f"✅ Market OPEN - Running time-based fallback ({interval})")
+    
+    # ... (rest of existing time_based_fallback_job code stays the same)
+```
+
+**OPTIONAL Location 3:** In `fetch_tiingo_data()` method (around line 280) - Saves API quota
+
+**This is optional but recommended:**
+```python
+async def fetch_tiingo_data(self, interval: str = '30m'):
+    """Fetch data from Tiingo."""
+    
+    # OPTIONAL: Skip fetch on closed market to save API quota
+    if not Config.is_market_open():
+        logger.debug(f"Market closed - skipping Tiingo fetch ({interval})")
+        return
+    
+    # ... (rest of existing fetch code stays the same)
+```
+
+---
+
+### PHASE 2: EVENT DEDUPLICATION (30 minutes)
+**Goal:** Prevent same event from generating 10 duplicate signals
+
+#### Step 2.1: Update `async_scheduler.py` - Add Event Deduplication Cache (15 minutes)
+
+**Location 1:** In `__init__()` method (around line 95, after existing attributes)
+
+**Find this section:**
+```python
+def __init__(self):
+    self.db = DatabaseManager()
+    self.scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    # ... other initializations ...
+```
+
+**Add these new attributes:**
+```python
+def __init__(self):
+    self.db = DatabaseManager()
+    self.scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    # ... existing attributes ...
+    
+    # ============================================================================
+    # EVENT DEDUPLICATION SYSTEM
+    # ============================================================================
+    # Track processed events to prevent duplicates
+    # Key format: "TICKER|INTERVAL|EVENT_TYPE|TIMESTAMP_ISO"
+    # Value: datetime when event was processed
+    self._processed_event_ids: Dict[str, datetime] = {}
+    
+    # How long to remember processed events (24 hours)
+    self._event_memory_hours = 24
+    
+    logger.info("✅ Event deduplication system initialized")
+```
+
+**Location 2:** Add helper methods after `__init__()` (around line 130)
+
+```python
+def _generate_event_id(self, event: 'MarketEvent') -> str:
+    """
+    Generate unique ID for an event based on its core attributes.
+    
+    This ensures the SAME market event (e.g., RSI rebound on CADJPY at 
+    Friday 20:00) is only processed ONCE, even if detected multiple times
+    during subsequent scheduler runs.
+    
+    Args:
+        event: MarketEvent object
+        
+    Returns:
+        str: Unique event ID in format "TICKER|INTERVAL|TYPE|TIMESTAMP"
+    
+    Example:
+        "CADJPY|4h|rsi_rebound_bullish|2026-01-16T20:00:00"
+    """
+    # Use the event's CANDLE timestamp (not current time)
+    # This is critical - we want to identify the SAME candle event
+    event_timestamp = event.timestamp.isoformat()
+    
+    return f"{event.ticker}|{event.interval}|{event.event_type}|{event_timestamp}"
+
+def _is_event_already_processed(self, event_id: str) -> bool:
+    """
+    Check if this event was already processed.
+    
+    Args:
+        event_id: Unique event identifier
+        
+    Returns:
+        bool: True if event was already processed, False if new
+    """
+    return event_id in self._processed_event_ids
+
+def _mark_event_processed(self, event_id: str):
+    """
+    Mark event as processed with current timestamp.
+    
+    Args:
+        event_id: Unique event identifier
+    """
+    self._processed_event_ids[event_id] = datetime.now(timezone.utc)
+
+def _cleanup_old_event_ids(self):
+    """
+    Remove event IDs older than memory window.
+    
+    This prevents the cache from growing indefinitely.
+    Called periodically by scheduler.
+    """
+    from datetime import timedelta
+    
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=self._event_memory_hours)
+    
+    # Find stale event IDs
+    stale_ids = [
+        event_id for event_id, processed_time in self._processed_event_ids.items()
+        if processed_time < cutoff
+    ]
+    
+    # Remove them
+    for event_id in stale_ids:
+        del self._processed_event_ids[event_id]
+    
+    if stale_ids:
+        logger.info(f"🧹 Cleaned up {len(stale_ids)} old event IDs (>{self._event_memory_hours}h)")
+```
+
+#### Step 2.2: Apply Deduplication in Event Processing (15 minutes)
+
+**Location:** In `event_monitor_job()` method (around line 425, in the event processing loop)
+
+**Find this section:**
+```python
+# Process each detected event
+for event in filtered_events:
+    # ... existing event processing code ...
+    result = self.signal_engine.handle_event(event, metadata=metadata)
+```
+
+**Replace with:**
+```python
+# Process each detected event with deduplication
+for event in filtered_events:
+    # ============================================================================
+    # DEDUPLICATION CHECK - Skip if event already processed
+    # ============================================================================
+    event_id = self._generate_event_id(event)
+    
+    if self._is_event_already_processed(event_id):
+        logger.debug(
+            f"⏭️  Skipping duplicate event: {event.ticker} {event.interval} "
+            f"{event.event_type} at {event.timestamp.strftime('%Y-%m-%d %H:%M')}"
+        )
+        continue  # Skip to next event
+    
+    # Event is NEW - process it
+    logger.info(
+        f"✨ Processing NEW event: {event.ticker} {event.interval} "
+        f"{event.event_type} at {event.timestamp.strftime('%Y-%m-%d %H:%M')}"
+    )
+    
+    # ... existing event processing code (handle_event, Telegram, etc.) ...
+    result = self.signal_engine.handle_event(event, metadata=metadata)
+    
+    # Mark event as processed AFTER successful handling
+    if result:
+        self._mark_event_processed(event_id)
+        logger.debug(f"✅ Event marked as processed: {event_id}")
+```
+
+#### Step 2.3: Schedule Periodic Cleanup (5 minutes)
+
+**Location:** In `register_jobs()` method (around line 1080, after health_check job)
+
+**Add new cleanup job:**
+```python
+# Job: Event deduplication cleanup (every 6 hours)
+self.scheduler.add_job(
+    self._cleanup_old_event_ids,
+    trigger=CronTrigger(minute=0, hour='*/6', timezone='UTC'),
+    id='event_dedup_cleanup',
+    name='Event Deduplication Cleanup',
+    replace_existing=True
+)
+logger.info("✅ Registered event deduplication cleanup job (every 6h)")
+```
+
+---
+
+### PHASE 3: DATA FRESHNESS VALIDATION (20 minutes)
+**Goal:** Skip analysis of stale OHLCV data (>4 hours old)
+
+#### Step 3.1: Update `core/config.py` - Add Freshness Threshold (5 minutes)
+
+**Location:** Add after `EVENT_COOLDOWN_SECONDS` (around line 210)
+
+```python
+# ============================================================================
+# DATA FRESHNESS CONFIGURATION
+# ============================================================================
+# Maximum age for OHLCV data before skipping analysis (in minutes)
+# If latest candle is older than this, we skip event detection
+# 4 hours = 240 minutes (allows for one missed 4h candle)
+OHLCV_MAX_AGE_MINUTES = 240
+
+# Per-interval thresholds (optional - use OHLCV_MAX_AGE_MINUTES if not specified)
+OHLCV_MAX_AGE_BY_INTERVAL = {
+    '30m': 60,   # 1 hour max age for 30m candles
+    '1h': 90,    # 1.5 hours max age for 1h candles
+    '4h': 300,   # 5 hours max age for 4h candles (allows 1 missed candle)
+}
+```
+
+#### Step 3.2: Update `async_scheduler.py` - Add Freshness Check (15 minutes)
+
+**Location:** In `event_monitor_job()` method (around line 405, after loading OHLCV, before analyze())
+
+**Find this section:**
+```python
+# Load OHLCV data
+df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+
+if df is None or df.empty:
+    logger.warning(f"No OHLCV data for {symbol} {interval}")
+    continue
+
+# Immediately calls analyze() - NO FRESHNESS CHECK ❌
+events = self.event_monitor.analyze(symbol, interval, df)
+```
+
+**Replace with:**
+```python
+# Load OHLCV data
+df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+
+if df is None or df.empty:
+    logger.warning(f"No OHLCV data for {symbol} {interval}")
+    continue
+
+# ============================================================================
+# DATA FRESHNESS VALIDATION - Skip if data too old
+# ============================================================================
+latest_candle_time = pd.Timestamp(df.index[-1])
+now = datetime.now(timezone.utc)
+age_minutes = (now - latest_candle_time).total_seconds() / 60
+
+# Get max age threshold for this interval
+max_age = Config.OHLCV_MAX_AGE_BY_INTERVAL.get(
+    interval, 
+    Config.OHLCV_MAX_AGE_MINUTES
+)
+
+if age_minutes > max_age:
+    logger.warning(
+        f"⏱️  {symbol} {interval}: Data is STALE "
+        f"(age: {age_minutes:.0f} min, max: {max_age} min). "
+        f"Last candle: {latest_candle_time.strftime('%Y-%m-%d %H:%M UTC')}. "
+        f"Skipping analysis."
+    )
+    continue  # Skip this symbol - data too old
+
+# Data is fresh - proceed with analysis
+logger.debug(
+    f"✅ {symbol} {interval}: Data is FRESH "
+    f"(age: {age_minutes:.0f} min < {max_age} min)"
+)
+
+events = self.event_monitor.analyze(symbol, interval, df)
+```
+
+**Also add the same check in `time_based_fallback_job()`** (around line 520, same location pattern)
+
+---
+
+### PHASE 4: DEPLOYMENT & TESTING (10 minutes)
+
+#### Step 4.1: Pre-Deployment Checklist
+
+```bash
+# On your Windows machine, before uploading to AWS
+
+# 1. Backup current production files
+ssh -i opticore-key.pem ubuntu@52.90.60.32 "
+cd /home/ubuntu/opticore-bot && \
+cp core/config.py core/config.py.backup_jan17_pre_fix && \
+cp async_scheduler.py async_scheduler.py.backup_jan17_pre_fix
+"
+
+# 2. Create deployment package (from your local ML directory)
+tar -czf silent_analyst_fixes_phase1.tar.gz \
+  core/config.py \
+  async_scheduler.py
+
+# 3. Upload to AWS
+scp -i opticore-key.pem silent_analyst_fixes_phase1.tar.gz ubuntu@52.90.60.32:/home/ubuntu/
+
+# 4. SSH to AWS
+ssh -i opticore-key.pem ubuntu@52.90.60.32
+```
+
+#### Step 4.2: Deployment on AWS
+
+```bash
+# Extract fixes
+cd /home/ubuntu
+tar -xzf silent_analyst_fixes_phase1.tar.gz -C opticore-bot/
+
+# Verify files updated
+ls -lh opticore-bot/core/config.py
+ls -lh opticore-bot/async_scheduler.py
+
+# Restart service
+sudo systemctl restart opticore.service
+
+# Monitor startup (watch for errors)
+sudo journalctl -u opticore.service -f -n 50
+```
+
+**Expected log output:**
+```
+✅ Event deduplication system initialized
+✅ Registered event deduplication cleanup job (every 6h)
+✅ Market OPEN - Running event monitor (4h)
+   OR
+🚫 Market CLOSED - Skipping event monitor (4h). Next open: 2026-01-19 22:00 UTC
+```
+
+#### Step 4.3: Verification Tests (10 minutes)
+
+**Test 1: Market Hours Gate Working**
+```bash
+# Check if market hours gate is working
+sudo journalctl -u opticore.service | grep -i "market closed"
+
+# Expected (if Saturday):
+# 🚫 Market CLOSED - Skipping event monitor (4h). Next open: ...
+
+# Expected (if market open):
+# ✅ Market OPEN - Running event monitor (4h)
+```
+
+**Test 2: No Duplicate Signals**
+```bash
+# Wait for next hourly event monitor run, then check for duplicates
+python3 << 'EOF'
+import sqlite3
+from datetime import datetime, timedelta
+
+conn = sqlite3.connect('/home/ubuntu/opticore-bot/trading_bot.db')
+cursor = conn.cursor()
+
+# Check for duplicate signals in last 2 hours
+cursor.execute('''
+    SELECT 
+        ticker, 
+        interval, 
+        datetime(timestamp) as ts,
+        signal, 
+        entry_price,
+        COUNT(*) as count
+    FROM ml_signals
+    WHERE timestamp > datetime('now', '-2 hours')
+    GROUP BY ticker, interval, datetime(timestamp), signal, entry_price
+    HAVING count > 1
+    ORDER BY count DESC
+''')
+
+duplicates = cursor.fetchall()
+
+if duplicates:
+    print("⚠️  DUPLICATES FOUND:")
+    for row in duplicates:
+        print(f"  {row[0]} {row[1]} @ {row[2]}: {row[5]} occurrences")
+else:
+    print("✅ NO DUPLICATES - Deduplication working!")
+
+conn.close()
+EOF
+```
+
+**Test 3: Stale Data Skipped**
+```bash
+# Check if stale data is being skipped
+sudo journalctl -u opticore.service | grep -i "stale"
+
+# Expected:
+# ⏱️  XAUUSD 4h: Data is STALE (age: 5524 min, max: 300 min). Skipping analysis.
+```
+
+**Test 4: Signal Quality Check**
+```bash
+# Check signals generated in last hour
+python3 << 'EOF'
+import sqlite3
+conn = sqlite3.connect('/home/ubuntu/opticore-bot/trading_bot.db')
+cursor = conn.cursor()
+
+cursor.execute('''
+    SELECT 
+        datetime(timestamp) as time,
+        ticker,
+        interval,
+        signal,
+        confidence,
+        entry_price
+    FROM ml_signals
+    WHERE timestamp > datetime('now', '-1 hour')
+    ORDER BY timestamp DESC
+    LIMIT 10
+''')
+
+signals = cursor.fetchall()
+print(f"✅ Signals in last hour: {len(signals)}")
+for row in signals:
+    print(f"  {row[0]} | {row[1]:8} {row[2]:3} | {row[3]:8} | {row[4]:.2f} conf | Entry: {row[5]:.4f}")
+
+conn.close()
+EOF
+```
+
+---
+
+### PHASE 5: XAUUSD INVESTIGATION (30-60 minutes)
+**Goal:** Find why XAUUSD data is 92 hours stale
+
+This should be done **AFTER** the critical fixes are deployed and verified.
+
+#### Investigation Checklist
+
+```bash
+# 1. Check logs for XAUUSD-specific errors
+sudo journalctl -u opticore.service | grep -i "xauusd" | grep -i "error\|fail\|exception"
+
+# 2. Check database for recent XAUUSD entries
+python3 << 'EOF'
+import sqlite3
+conn = sqlite3.connect('/home/ubuntu/opticore-bot/trading_bot.db')
+cursor = conn.cursor()
+
+cursor.execute('''
+    SELECT datetime(timestamp), symbol, timeframe, close
+    FROM ohlcv_data
+    WHERE symbol = 'XAUUSD'
+    ORDER BY timestamp DESC
+    LIMIT 10
+''')
+
+print("Last 10 XAUUSD candles:")
+for row in cursor.fetchall():
+    print(f"  {row[0]} | {row[1]} | {row[2]} | Close: {row[3]}")
+
+conn.close()
+EOF
+
+# 3. Test manual Tiingo API call
+# (Replace YOUR_API_KEY with actual key from .env)
+curl "https://api.tiingo.com/tiingo/forex/prices?tickers=xauusd&token=YOUR_API_KEY" | jq
+
+# 4. Check if XAUUSD in Config.SYMBOLS
+python3 << 'EOF'
+import sys
+sys.path.insert(0, '/home/ubuntu/opticore-bot')
+from core.config import Config
+
+symbols = Config.get_symbol_list()
+print(f"XAUUSD in watchlist: {'XAUUSD' in symbols}")
+print(f"Total symbols: {len(symbols)}")
+print(f"Symbols: {symbols}")
+EOF
+
+# 5. Check Tiingo ticker mapping
+python3 << 'EOF'
+import sys
+sys.path.insert(0, '/home/ubuntu/opticore-bot')
+from core.config import Config
+
+tiingo_ticker = Config.get_tiingo_ticker('XAUUSD')
+print(f"XAUUSD maps to Tiingo ticker: {tiingo_ticker}")
+EOF
+```
+
+**Possible findings and fixes:**
+1. **If API returns error** → May need subscription upgrade or different symbol format
+2. **If database INSERT failing** → May need to check database constraints
+3. **If not in watchlist** → Add XAUUSD back to Config.SYMBOLS
+4. **If ticker mapping wrong** → Fix Config.TIINGO_TICKER_MAP
+
+---
+
+## ROLLBACK PLAN
+
+If anything goes wrong:
+
+```bash
+# SSH to AWS
+ssh -i opticore-key.pem ubuntu@52.90.60.32
+
+# Stop service
+sudo systemctl stop opticore.service
+
+# Restore backups
+cd /home/ubuntu/opticore-bot
+cp core/config.py.backup_jan17_pre_fix core/config.py
+cp async_scheduler.py.backup_jan17_pre_fix async_scheduler.py
+
+# Restart with old code
+sudo systemctl start opticore.service
+
+# Verify
+sudo systemctl status opticore.service
+```
+
+---
+
+## SUCCESS CRITERIA
+
+After deployment, you should see:
+
+✅ **Market Hours Working:**
+- Saturday logs show: "🚫 Market CLOSED - Skipping..."
+- Monday-Friday logs show: "✅ Market OPEN - Running..."
+
+✅ **No Duplicates:**
+- Database query shows 0 duplicate signals
+- Logs show: "⏭️ Skipping duplicate event..." messages
+
+✅ **Stale Data Skipped:**
+- XAUUSD skipped with: "⏱️ Data is STALE..." warning
+- Other pairs show: "✅ Data is FRESH..."
+
+✅ **Clean Week of Data:**
+- Monday-Friday: 50-100 unique signals
+- Saturday-Sunday: 0 signals
+- No duplicate events in database
+
+---
+
+## TIMELINE
+
+**Total Time: 65 minutes** (critical fixes only)
+
+| Phase | Time | Status |
+|-------|------|--------|
+| Phase 1: Market Hours | 15 min | Ready |
+| Phase 2: Deduplication | 30 min | Ready |
+| Phase 3: Freshness | 20 min | Ready |
+| Phase 4: Deploy & Test | 10 min | Ready |
+| **Phase 5: XAUUSD (separate)** | 30-60 min | After critical fixes |
+
+---
+
+## NEXT STEPS
+
+1. ✅ **Review this implementation plan**
+2. ✅ **Make code changes locally** (on Windows machine)
+3. ✅ **Test locally** (optional - if you have test environment)
+4. ✅ **Deploy to AWS** (follow Phase 4 steps)
+5. ✅ **Verify fixes working** (Phase 4.3 tests)
+6. ✅ **Let system run for 1 week** (collect clean data)
+7. ✅ **Investigate XAUUSD** (Phase 5 - after main fixes stable)
+
+Ready to implement?

@@ -1,0 +1,127 @@
+//@version=5
+strategy("OptiCore Refined Strategy - EMA21/100 with Daily HTF", overlay=true, margin_long=100, margin_short=100, process_orders_on_close=true)
+
+// -------------------------
+// USER INPUTS
+// -------------------------
+inputGroupCore = "Core Settings"
+strictEngulfing = input.bool(true, "Strict Engulfing (Toggle)", group=inputGroupCore)
+emaLength = input.int(21, "LTF EMA Length", minval=1, group=inputGroupCore, tooltip="Lower timeframe EMA for current chart")
+rsiLength = input.int(14, "RSI Length", minval=1, group=inputGroupCore)
+
+// HTF settings - NOW DAILY
+inputGroupHTF = "Higher Timeframe (Daily)"
+useHTF = input.bool(true, "Use Daily Trend Filter", group=inputGroupHTF, tooltip="Require daily timeframe alignment")
+htfTF = input.timeframe("D", "HTF Resolution (Daily)", group=inputGroupHTF)
+htfEmaLength = input.int(100, "Daily EMA Length", minval=1, group=inputGroupHTF, tooltip="Daily EMA for trend confirmation")
+
+// -------------------------
+// FILTERS
+// -------------------------
+inputGroupFilters = "Filters"
+volPeriod = input.int(20, "Volume SMA Period", minval=1, group=inputGroupFilters)
+volMult = input.float(1.2, "Volume Multiplier (> Avg)", minval=1.0, step=0.1, group=inputGroupFilters, tooltip="Require volume > 1.2x average")
+
+inputGroupDisplay = "Display Settings"
+dashboardPosition = input.string("Top Right", "Dashboard Position", options=["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group=inputGroupDisplay)
+showSignals = input.bool(true, "Show Signal Shapes", group=inputGroupDisplay)
+showHTF = input.bool(true, "Show Daily EMA on Chart", group=inputGroupDisplay)
+
+// -------------------------
+// INDICATORS (Lower Timeframe)
+// -------------------------
+emaFilter = math.round(ta.ema(close, emaLength) * 100000) / 100000
+rsiVal = math.round(ta.rsi(close, rsiLength) * 100) / 100
+avgVol = math.round(ta.sma(volume, volPeriod) * 100) / 100
+
+// -------------------------
+// DAILY EMA (Higher Timeframe)
+// -------------------------
+dailyEma = request.security(syminfo.tickerid, htfTF, ta.ema(close, htfEmaLength))
+dailyClose = request.security(syminfo.tickerid, htfTF, close)
+
+// -------------------------
+// ENGULFING PATTERN LOGIC
+// -------------------------
+isBullishEngulfing = (close > open) and (close[1] < open[1]) and (close >= open[1]) and (open <= close[1])
+isBearishEngulfing = (close < open) and (close[1] > open[1]) and (close <= open[1]) and (open >= close[1])
+
+bullEngulfValid = strictEngulfing ? isBullishEngulfing : (close > open)
+bearEngulfValid = strictEngulfing ? isBearishEngulfing : (close < open)
+
+// -------------------------
+// ENTRY CONDITIONS
+// -------------------------
+// Long: Bullish candle + Price > EMA21 + RSI > 50 + Volume spike + Daily bullish
+longCondition = bullEngulfValid and (close > emaFilter) and (rsiVal > 50) and (volume > avgVol * volMult)
+longCondition := useHTF ? (longCondition and dailyClose > dailyEma) : longCondition
+
+// Short: Bearish candle + Price < EMA21 + RSI < 50 + Volume spike + Daily bearish
+shortCondition = bearEngulfValid and (close < emaFilter) and (rsiVal < 50) and (volume > avgVol * volMult)
+shortCondition := useHTF ? (shortCondition and dailyClose < dailyEma) : shortCondition
+
+// -------------------------
+// EXECUTE TRADES
+// -------------------------
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+
+if (shortCondition)
+    strategy.entry("Short", strategy.short)
+
+// -------------------------
+// DASHBOARD METRICS
+// -------------------------
+efficiency = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : na
+profitFactor = math.max(math.abs(strategy.grossloss), 1) > 0 ? strategy.grossprofit / math.max(math.abs(strategy.grossloss), 1) : na
+avgTrade = strategy.closedtrades > 0 ? strategy.netprofit / strategy.closedtrades : na
+maxDrawdown = strategy.max_drawdown
+
+// -------------------------
+// DASHBOARD TABLE
+// -------------------------
+var table dash = na
+var string dash_created_pos = na
+
+pos_enum = switch dashboardPosition
+    "Top Left" => position.top_left
+    "Top Right" => position.top_right
+    "Bottom Left" => position.bottom_left
+    => position.bottom_right
+
+if na(dash)
+    dash := table.new(pos_enum, columns=2, rows=6, border_width=1)
+    dash_created_pos := dashboardPosition
+
+if barstate.islast and not na(dash)
+    // Header
+    table.cell(dash, 0, 0, "Metric", bgcolor=color.rgb(30,30,30), text_color=color.white)
+    table.cell(dash, 1, 0, "Value", bgcolor=color.rgb(30,30,30), text_color=color.white)
+    
+    // Metrics
+    table.cell(dash, 0, 1, "Efficiency", text_color=color.white)
+    table.cell(dash, 1, 1, na(efficiency) ? "N/A" : str.tostring(efficiency, "#.##") + "%", text_color=color.yellow)
+    
+    table.cell(dash, 0, 2, "Profit Factor", text_color=color.white)
+    table.cell(dash, 1, 2, na(profitFactor) ? "N/A" : str.tostring(profitFactor, "#.##"), text_color=color.lime)
+    
+    table.cell(dash, 0, 3, "Avg Trade", text_color=color.white)
+    table.cell(dash, 1, 3, na(avgTrade) ? "N/A" : str.tostring(avgTrade, "#.##"), text_color=color.orange)
+    
+    table.cell(dash, 0, 4, "Drawdown", text_color=color.white)
+    table.cell(dash, 1, 4, str.tostring(maxDrawdown, "#.##"), text_color=color.red)
+    
+    // Daily trend indicator
+    dailyTrend = dailyClose > dailyEma ? "BULLISH ↑" : "BEARISH ↓"
+    dailyColor = dailyClose > dailyEma ? color.lime : color.red
+    table.cell(dash, 0, 5, "Daily Trend", text_color=color.white)
+    table.cell(dash, 1, 5, dailyTrend, text_color=dailyColor)
+
+// -------------------------
+// CHART VISUALS
+// -------------------------
+plot(emaFilter, "EMA 21", color=color.orange, linewidth=2)
+plot(showHTF ? dailyEma : na, "Daily EMA 100", color=color.blue, linewidth=2, style=plot.style_linebr)
+
+plotshape(showSignals and longCondition ? true : na, "Long Signal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
+plotshape(showSignals and shortCondition ? true : na, "Short Signal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)

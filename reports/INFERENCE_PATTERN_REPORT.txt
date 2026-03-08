@@ -1,0 +1,39 @@
+========================================================================================================================
+INFERENCE PATTERN ANALYSIS REPORT
+Generated: 2026-02-17T13:22:50.386944+00:00
+Database: trading_bot.db
+========================================================================================================================
+
+CRITICAL OBSERVATION
+------------------------------------------------------------------------------------------------------------------------
+Total Signals: 1000
+BUY:    477 (47.7%)
+SELL:   0 (0.0%)
+NEUTRAL: 523 (52.3%)
+
+🚨 CONFIRMED: ZERO SELL SIGNALS IN {total} PREDICTIONS
+
+This is not a statistical variance - it's a systematic defect.
+
+The model's predict() method is NOT returning class 0 (SELL).
+
+Next steps:
+  1. Check XGBoost model classes: confirmed? 0 and 1 only?
+  2. Extract raw probabilities with predict_proba()
+  3. Verify decision boundary: argmax always returns 1?
+  4. Check if retrain needed with balanced class_weight
+
+Confidence statistics:
+
+BUY:
+  Count: 477
+  Mean Confidence: 0.6405
+  Min:  0.5000
+  Max:  0.9500
+
+NEUTRAL:
+  Count: 523
+  Mean Confidence: 0.6382
+  Min:  0.5003
+  Max:  0.9500
+

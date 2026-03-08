@@ -1,0 +1,1574 @@
+"""
+Async Scheduler - APScheduler Integration for ML Pipeline
+Replaces schedule library with async job scheduling
+"""
+
+import asyncio
+import subprocess
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
+import logging
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
+
+from core.config import Config
+from core.database import DatabaseManager
+from core.pipeline_tracker import get_tracker
+from data.tiingo_fetcher import TiingoFetcher
+from features.engine import FeatureEngine
+from models.xgb_trainer import XGBTrainer
+from signals.event_monitor import EventMonitor, EventMonitorConfig
+from signals.xgb_signal_engine_ec2 import PureStrategyEngine
+from signals.v2_execution_engine import V2ExecutionEngine
+from alerts.telegram_bot import TelegramBot
+import pandas as pd
+
+
+
+def log_stage_transition(ticker, interval, direction, old_stage, new_stage, bar_num, bar_time, price, notes=""):
+    """Log strategy state transitions for forensic audit trail."""
+    try:
+        import sqlite3
+        from pathlib import Path
+        db_path = Path("/home/ubuntu/SilentAnalyst/trading_bot.db")
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO strategy_transition_log
+            (ticker, interval, strategy_name, direction, old_stage, new_stage, bar_number, bar_time, price_at_event, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ticker, interval, "strategy_core_v2", direction, old_stage, new_stage, bar_num, bar_time, price, notes))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+async def _run_blocking(func, *args, **kwargs):
+    """Run blocking Telegram calls without freezing the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class MLPipelineScheduler:
+    """
+    Async scheduler for ML pipeline operations
+    
+    Jobs:
+    - 30min: Fetch Tiingo data for 30m timeframe
+    - 1h: Fetch Tiingo data for 1h timeframe + generate signals
+    - EOD (23:00 UTC): Feature generation + model training + cleanup
+    """
+    
+    def __init__(self, enable_telegram: bool = True):
+        """
+        Initialize async scheduler
+        
+        Args:
+            enable_telegram: Whether to send Telegram alerts
+        """
+        # GUARDRAIL 3: DB PATH ASSERTION - Verify absolute path at startup
+        logger.info("="*70)
+        logger.info("🔐 DATABASE PATH VERIFICATION")
+        logger.info(f"   Config DB_PATH: {Config.DB_PATH}")
+        import os
+        if os.path.exists(Config.DB_PATH):
+            db_size_mb = os.path.getsize(Config.DB_PATH) / (1024 * 1024)
+            logger.info(f"   ✅ Database exists at absolute path: {Config.DB_PATH}")
+            logger.info(f"   📊 Database size: {db_size_mb:.1f} MB")
+        else:
+            logger.error(f"   ❌ CRITICAL: Database NOT FOUND at: {Config.DB_PATH}")
+        logger.info("="*70)
+        
+        self.scheduler = AsyncIOScheduler()
+        self.db = DatabaseManager()
+        self.feature_engine = FeatureEngine()
+        self.signal_engine = PureStrategyEngine()
+        self.v2_execution_engine = V2ExecutionEngine()
+        self._signal_engine_lock = asyncio.Lock()
+        self.pipeline_tracker = get_tracker()
+        # Relaxed event detection thresholds for forex low-volatility market conditions
+        forex_event_config = EventMonitorConfig(
+            min_confidence=0.35,      # Lowered from 0.55 for forex sensitivity
+            cooldown_seconds=1800,    # 30 min cooldown instead of 1h for more signals
+            structure_lookback=15,    # Reduced from 20 for faster pattern detection
+            volume_window=15,         # Reduced from 20 for more responsive volume detection
+            atr_period=12,            # Reduced from 14 for quicker volatility response
+            ema_fast=21,
+            ema_slow=100,
+            rsi_period=14,
+            # Engulfed structure parameters
+            engulfed_range_lookback=Config.ENGULFED_RANGE_LOOKBACK,
+            engulfed_min_break_pips=Config.ENGULFED_MIN_BREAK_PIPS,
+            engulfed_min_volume_mult=Config.ENGULFED_MIN_VOLUME_MULT,
+            engulfed_use_daily_filter=Config.ENGULFED_USE_DAILY_FILTER,
+        )
+        self.event_monitor = EventMonitor(forex_event_config) if Config.EVENT_MODE_ENABLED else None
+        self._event_symbol_cooldowns: Dict[str, datetime] = {}
+        self._event_cooldown_window = timedelta(minutes=60)
+        
+        # ============================================================================
+        # EVENT DEDUPLICATION SYSTEM
+        # ============================================================================
+        # Track processed events to prevent duplicates
+        # Key format: "TICKER|INTERVAL|EVENT_TYPE|TIMESTAMP_ISO"
+        # Value: datetime when event was processed
+        self._processed_event_ids: Dict[str, datetime] = {}
+        
+        # How long to remember processed events (24 hours)
+        self._event_memory_hours = 24
+        
+        logger.info("✅ Event deduplication system initialized")
+        
+        # ============================================================================
+        # Track market state for Telegram notifications
+        self._last_market_state: bool | None = None  # None=unknown, True=open, False=closed
+        
+        logger.info("✅ Market state tracker initialized")
+        
+        # Hybrid mode: Event-driven PRIMARY with time-based FALLBACK
+        # Tracks last signal generation per symbol to decide between event/time-based modes
+        self._last_signal_time: Dict[str, datetime] = {}  # symbol -> last signal timestamp
+        self._last_event_time: Dict[str, datetime] = {}   # symbol -> last event detection time
+        self.FALLBACK_HOURS = 4                            # Run time-based if no events in 4h
+        self.TIME_BASED_MAX_CONFIDENCE = 0.6               # Cap confidence for scheduled signals
+        
+        self.enable_telegram = enable_telegram and Config.TELEGRAM_NOTIFICATIONS_ENABLED
+        
+        if self.enable_telegram:
+            self.telegram_bot = TelegramBot()
+        else:
+            self.telegram_bot = None
+        
+        # Track job statistics
+        self.job_stats = {
+            'fetch_30m': {'success': 0, 'errors': 0, 'last_run': None},
+            'fetch_1h': {'success': 0, 'errors': 0, 'last_run': None},
+            'generate_signals': {'success': 0, 'errors': 0, 'last_run': None},
+            'eod_pipeline': {'success': 0, 'errors': 0, 'last_run': None},
+            'event_monitor': {'success': 0, 'errors': 0, 'last_run': None},
+        }
+        
+        # Add event listeners
+        self.scheduler.add_listener(self._job_executed, EVENT_JOB_EXECUTED)
+        self.scheduler.add_listener(self._job_error, EVENT_JOB_ERROR)
+    
+    def _job_executed(self, event):
+        """Handle successful job execution"""
+        job_id = event.job_id
+        logger.info(f"✅ Job completed: {job_id}")
+        
+        if job_id in self.job_stats:
+            self.job_stats[job_id]['success'] += 1
+            self.job_stats[job_id]['last_run'] = datetime.now(timezone.utc)
+        
+        # Log to database for persistence
+        try:
+            from datetime import timezone as tz
+            # Try to get job name from scheduler, fallback to job_id
+            try:
+                job = self.scheduler.get_job(job_id)
+                job_name = job.name if job else job_id
+            except:
+                job_name = job_id
+            
+            self.db.log_job_execution(
+                job_id=job_id,
+                job_name=job_name,
+                status='success',
+                started_at=event.scheduled_run_time.replace(tzinfo=None) if event.scheduled_run_time else datetime.now(tz.utc).replace(tzinfo=None),
+                completed_at=datetime.now(tz.utc).replace(tzinfo=None)
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to log job execution: {e}")
+    
+    def _job_error(self, event):
+        """Handle job errors"""
+        job_id = event.job_id
+        logger.error(f"❌ Job failed: {job_id} - {event.exception}")
+        
+        if job_id in self.job_stats:
+            self.job_stats[job_id]['errors'] += 1
+        
+        # Log to database for persistence
+        try:
+            from datetime import timezone as tz
+            job_name = event.job.name or job_id
+            self.db.log_job_execution(
+                job_id=job_id,
+                job_name=job_name,
+                status='failed',
+                started_at=event.scheduled_run_time.replace(tzinfo=None) if event.scheduled_run_time else datetime.now(tz.utc).replace(tzinfo=None),
+                completed_at=datetime.now(tz.utc).replace(tzinfo=None),
+                error_message=str(event.exception)
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to log job error: {e}")
+    
+    def _symbol_in_cooldown(self, symbol: str, now: datetime) -> bool:
+        last = self._event_symbol_cooldowns.get(symbol)
+        if not last:
+            return False
+        return (now - last) < self._event_cooldown_window
+
+    def _update_symbol_cooldown(self, symbol: str, now: datetime) -> None:
+        self._event_symbol_cooldowns[symbol] = now
+
+    def _prune_symbol_cooldowns(self, now: datetime) -> None:
+        expiry_threshold = now - self._event_cooldown_window
+        stale_keys = [sym for sym, ts in self._event_symbol_cooldowns.items() if ts < expiry_threshold]
+        for sym in stale_keys:
+            del self._event_symbol_cooldowns[sym]
+
+    def _generate_event_id(self, event: 'MarketEvent') -> str:
+        """
+        Generate unique ID for an event based on its core attributes.
+        
+        This ensures the SAME market event (e.g., RSI rebound on CADJPY at 
+        Friday 20:00) is only processed ONCE, even if detected multiple times
+        during subsequent scheduler runs.
+        
+        Timestamps are normalized to UTC without timezone suffix to ensure
+        consistency regardless of how the timestamp was originally formatted.
+        
+        Args:
+            event: MarketEvent object
+            
+        Returns:
+            str: Unique event ID in format "TICKER|INTERVAL|TYPE|TIMESTAMP"
+        
+        Example:
+            "CADJPY|4h|rsi_rebound_bullish|2026-01-16T20:00:00"
+        """
+        import pandas as pd
+        from datetime import timezone
+        
+        # Normalize timestamp to UTC without timezone suffix
+        # This ensures consistency even if timestamp comes from different sources
+        ts = pd.Timestamp(event.timestamp)
+        if ts.tz is not None:
+            ts = ts.tz_convert(timezone.utc)
+        else:
+            ts = ts.tz_localize(timezone.utc)
+        
+        # Remove timezone info and format as ISO string
+        event_timestamp_normalized = ts.tz_localize(None).isoformat()
+        
+        return f"{event.ticker}|{event.interval}|{event.event_type}|{event_timestamp_normalized}"
+
+    def _is_event_already_processed(self, event_id: str) -> bool:
+        """
+        Check if this event was already processed (in-memory or persistent database).
+        
+        Args:
+            event_id: Unique event identifier
+            
+        Returns:
+            bool: True if event was already processed, False if new
+        """
+        # Check in-memory cache first (fast)
+        if event_id in self._processed_event_ids:
+            return True
+        
+        # Check database for persistence (survives service restart)
+        try:
+            return self.db.is_event_processed(event_id)
+        except Exception as e:
+            logger.error(f"❌ Error checking database for processed event: {e}")
+            # Fallback to in-memory only if database fails
+            return event_id in self._processed_event_ids
+
+    def _mark_event_processed(self, event_id: str, event=None):
+        """
+        Mark event as processed (in-memory and persistent database).
+        
+        Args:
+            event_id: Unique event identifier
+            event: Optional MarketEvent object with ticker, interval, event_type, timestamp
+        """
+        # Always update in-memory cache for fast access
+        self._processed_event_ids[event_id] = datetime.now(timezone.utc)
+        
+        # Also store in database for persistence across service restarts
+        if event is not None:
+            try:
+                event_timestamp = event.timestamp.isoformat() if hasattr(event.timestamp, 'isoformat') else str(event.timestamp)
+                self.db.mark_event_processed(
+                    event_id=event_id,
+                    ticker=event.ticker,
+                    interval=event.interval,
+                    event_type=event.event_type,
+                    event_timestamp=event_timestamp
+                )
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to save event to database: {e}")
+                # Continue anyway - in-memory cache is still valid
+        else:
+            # If no event object provided, try to parse event_id to get components
+            # Format: "TICKER|INTERVAL|TYPE|TIMESTAMP"
+            try:
+                parts = event_id.split('|')
+                if len(parts) == 4:
+                    ticker, interval, event_type, event_timestamp = parts
+                    self.db.mark_event_processed(
+                        event_id=event_id,
+                        ticker=ticker,
+                        interval=interval,
+                        event_type=event_type,
+                        event_timestamp=event_timestamp
+                    )
+            except Exception as e:
+                logger.debug(f"Could not save event to database (fallback to in-memory): {e}")
+
+    def _cleanup_old_event_ids(self):
+        """
+        Remove event IDs older than memory window from both in-memory cache and database.
+        
+        This prevents the cache from growing indefinitely and keeps the database clean.
+        Called periodically by scheduler (every 6 hours).
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=self._event_memory_hours)
+        
+        # Find stale event IDs in memory
+        stale_ids = [
+            event_id for event_id, processed_time in self._processed_event_ids.items()
+            if processed_time < cutoff
+        ]
+        
+        # Remove them from memory
+        for event_id in stale_ids:
+            del self._processed_event_ids[event_id]
+        
+        # Also clean database (remove expired events)
+        try:
+            self.db.cleanup_old_processed_events(hours=self._event_memory_hours)
+        except Exception as e:
+            logger.warning(f"⚠️  Could not clean database events: {e}")
+        
+        if stale_ids:
+            logger.info(f"🧹 Cleaned up {len(stale_ids)} old event IDs (>{self._event_memory_hours}h)")
+
+    def _check_market_state_change(self):
+        """
+        Check if market opened or closed since last check.
+        Send Telegram alert if state changed.
+        
+        This runs once per job (hourly) to detect market transitions.
+        """
+        current_state = Config.is_market_open()
+        
+        # First time - just set state without alert
+        if self._last_market_state is None:
+            self._last_market_state = current_state
+            status = "🟢 OPEN" if current_state else "🔴 CLOSED"
+            logger.info(f"Market state initialized: {status}")
+            return
+        
+        # State changed - send alert
+        if self._last_market_state != current_state:
+            if current_state:
+                # Market opened
+                alert_msg = (
+                    f"🟢 <b>MARKET OPENED</b>\n"
+                    f"<b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+                    f"<b>Status:</b> Event detection active, signals generating"
+                )
+                logger.info(f"✅ Market OPENED - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+                if self.enable_telegram:
+                    try:
+                        self.telegram_bot.send_message(alert_msg)
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to send market open alert: {e}")
+            else:
+                # Market closed
+                alert_msg = (
+                    f"🔴 <b>MARKET CLOSED</b>\n"
+                    f"<b>Time:</b> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+                    f"<b>Status:</b> Event detection paused until market opens"
+                )
+                logger.info(f"⏹️  Market CLOSED - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+                if self.enable_telegram:
+                    try:
+                        self.telegram_bot.send_message(alert_msg)
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to send market closed alert: {e}")
+            
+            self._last_market_state = current_state
+
+    def _should_run_time_based_fallback(self, symbol: str, now: datetime) -> bool:
+        """
+        Hybrid mode logic: Decide if time-based signal generation should run.
+        
+        Returns True if:
+        - No event detected for this symbol in FALLBACK_HOURS (default 4h)
+        - OR first time checking this symbol
+        
+        This ensures we don't miss valid setups when event detector is quiet.
+        """
+        last_event = self._last_event_time.get(symbol)
+        if last_event is None:
+            # First time seeing this symbol, allow time-based run
+            return True
+        
+        hours_since_event = (now - last_event).total_seconds() / 3600
+        should_run = hours_since_event >= self.FALLBACK_HOURS
+        
+        if should_run:
+            logger.debug(f"   ⏳ {symbol}: {hours_since_event:.1f}h since last event → time-based fallback allowed")
+        
+        return should_run
+
+    def _record_event_detected(self, symbol: str, now: datetime) -> None:
+        """Record that an event was detected for this symbol (updates fallback timer)."""
+        self._last_event_time[symbol] = now
+
+    def _record_signal_generated(self, symbol: str, now: datetime, source: str) -> None:
+        """Record signal generation with source (event vs time-based)."""
+        self._last_signal_time[symbol] = now
+        logger.debug(f"   ✅ Signal recorded for {symbol} (source: {source})")
+
+    def _analyze_fetch_failures_24h(self) -> Dict[str, int]:
+        """
+        Analyze system logs to find fetch failures in the last 24 hours.
+        Returns a dict mapping symbol -> failure count.
+        """
+        import subprocess
+        
+        try:
+            # Query systemd logs for fetch failures in the last 24 hours
+            cmd = "journalctl -u opticore.service --since '1 day ago' --no-pager | grep -i 'fetch.*failed\\|fetch.*error\\|failed.*fetch'"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            
+            failure_counts: Dict[str, int] = {}
+            
+            # Parse log lines to extract symbols
+            for line in result.stdout.split('\n'):
+                if not line.strip():
+                    continue
+                # Look for patterns like "XAUUSD" or "Fetching XAUUSD"
+                for symbol in Config.get_symbol_list():
+                    if symbol in line:
+                        failure_counts[symbol] = failure_counts.get(symbol, 0) + 1
+                        break
+            
+            return failure_counts
+        except Exception as e:
+            logger.warning(f"Could not analyze fetch failures: {e}")
+            return {}
+
+    # ==========================================
+    # JOB DEFINITIONS
+    # ==========================================
+    
+    async def fetch_tiingo_data(self, interval: str, symbols: Optional[List[str]] = None):
+        """
+        Fetch Tiingo data for specified interval
+        
+        Args:
+            interval: Timeframe (e.g., '30m', '1h')
+            symbols: List of symbols (default: all watchlist)
+        """
+        logger.info(f"🔄 Starting Tiingo fetch job: {interval}")
+        
+        if not Config.USE_TIINGO_PIPELINE:
+            logger.info(f"⚠️  Tiingo pipeline disabled - skipping fetch")
+            return
+        
+        try:
+            async with TiingoFetcher() as fetcher:
+                # Check rate limits first
+                stats = fetcher.rate_limiter.get_usage_stats()
+                
+                if stats['hourly_remaining'] < 5 or stats['daily_remaining'] < 10:
+                    logger.warning(f"⚠️  Rate limit low - skipping fetch")
+                    logger.warning(f"   Hourly: {stats['hourly_remaining']} remaining")
+                    logger.warning(f"   Daily: {stats['daily_remaining']} remaining")
+                    return
+                
+                # Fetch data
+                results = await fetcher.fetch_batch(interval, symbols)
+                
+                logger.info(f"✅ Fetch complete: {len(results)} symbols")
+                
+                # Send Telegram notification if enabled
+                if (
+                    self.telegram_bot
+                    and Config.TELEGRAM_SEND_FETCH_REPORTS
+                    and len(results) > 0
+                ):
+                    message = (
+                        f"📥 <b>Tiingo Data Fetch</b>\n"
+                        f"Interval: {interval}\n"
+                        f"Symbols: {len(results)}/{len(Config.get_symbol_list())}\n"
+                        f"Rate Limits: {stats['hourly_remaining']}h, {stats['daily_remaining']}d remaining"
+                    )
+                    await _run_blocking(self.telegram_bot.send_message, message)
+        
+        except Exception as e:
+            logger.error(f"❌ Fetch job failed: {e}")
+            raise
+    
+    async def generate_signals_job(self, interval: str):
+        """
+        Generate ML signals for specified interval
+        
+        Args:
+            interval: Timeframe (e.g., '1h')
+        """
+        logger.info(f"🔮 Starting signal generation: {interval}")
+        
+        if not Config.USE_TIINGO_PIPELINE:
+            logger.info(f"⚠️  ML pipeline disabled - skipping signals")
+            return
+        
+        try:
+            async with self._signal_engine_lock:
+                if self.signal_engine.model is None:
+                    self.signal_engine.load_model()
+                signals = self.signal_engine.generate_signals(
+                    interval,
+                    trigger_metadata={
+                        'source': 'scheduler',
+                        'job_id': 'generate_signals',
+                        'interval': interval,
+                    },
+                )
+                actionable = self.signal_engine.get_actionable_signals(signals)
+            
+            logger.info(f"✅ Signals generated: {len(signals)} total, {len(actionable)} actionable")
+            
+            # Track V1 signal generation in pipeline
+            for signal in actionable:
+                signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                self.pipeline_tracker.update_stage(
+                    signal_id=signal_id,
+                    stage_name='v1',
+                    direction=signal.get('signal'),
+                    confidence=signal.get('confidence'),
+                )
+            
+            # NEW: Enrich V1 signals with V2 execution data (real-time entry/SL/TP)
+            if Config.V2_EXECUTION_ENABLED and len(actionable) > 0:
+                enriched_signals = []
+                for signal in actionable:
+                    if signal.get('v1_only'):
+                        # V1 signal without entry data - enrich with V2 execution
+                        enriched = self.v2_execution_engine.execute_v1_signal(signal)
+                        enriched_signals.append(enriched)
+                        
+                        # Track V2 enrichment in pipeline
+                        signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                        self.pipeline_tracker.mark_enriched(
+                            signal_id=signal_id,
+                            entry_price=enriched.get('entry_price'),
+                            stop_loss=enriched.get('stop_loss'),
+                            take_profit=enriched.get('take_profit'),
+                        )
+                    else:
+                        # Already has execution data, use as-is
+                        enriched_signals.append(signal)
+                        
+                        # Mark as enriched (execution data already present)
+                        signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                        self.pipeline_tracker.mark_enriched(
+                            signal_id=signal_id,
+                            entry_price=signal.get('entry_price'),
+                            stop_loss=signal.get('stop_loss'),
+                            take_profit=signal.get('take_profit'),
+                        )
+                actionable = enriched_signals
+                logger.info(f"✅ V2 execution enrichment complete: {len(actionable)} signals enriched")
+            
+            # Update heartbeat file
+            try:
+                heartbeat_file = Path('logs/last_heartbeat.txt')
+                heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(heartbeat_file, 'w') as f:
+                    f.write(f"{datetime.now().isoformat()}\n")
+                    f.write(f"Signals: {len(signals)} total, {len(actionable)} actionable\n")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not update heartbeat file: {e}")
+            
+            # Send Telegram alerts for actionable signals
+            if (
+                self.telegram_bot
+                and Config.TELEGRAM_SEND_SIGNAL_ALERTS
+                and len(actionable) > 0
+            ):
+                for signal in actionable:
+                    emoji = "🟢" if signal['signal'] == 1 else "🔴"
+                    
+                    # Build comprehensive trade message (HTML format)
+                    message = (
+                        f"{emoji} <b>ML Signal Alert</b>\n\n"
+                        f"<b>Symbol:</b> {signal['ticker']}\n"
+                        f"<b>Signal:</b> {signal['signal_label']}\n"
+                        f"<b>Confidence:</b> {signal['confidence']:.1%}\n"
+                        f"<b>Interval:</b> {interval}\n"
+                        f"<b>Model:</b> {signal['model_version']}\n"
+                        f"<b>Time:</b> {signal['timestamp']}\n\n"
+                        f"<b>📊 Trade Levels:</b>\n"
+                    )
+                    
+                    # Add trade levels if available
+                    if signal.get('entry_price') is not None:
+                        message += f"<b>Entry:</b> <code>{signal['entry_price']}</code>\n"
+                        message += f"<b>Stop Loss:</b> <code>{signal['stop_loss']}</code>\n"
+                        message += f"<b>Take Profit:</b> <code>{signal['take_profit']}</code>\n"
+                    else:
+                        message += "<b>Entry/SL/TP:</b> <i>Waiting for V2 execution layer...</i>\n"
+                    
+                    try:
+                        await _run_blocking(self.telegram_bot.send_message, message)
+                        
+                        # Track broadcast to Telegram (only after successful send)
+                        try:
+                            signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                            self.pipeline_tracker.mark_broadcast(signal_id)
+                        except Exception:
+                            pass  # Never let tracker crash signal flow
+                    except Exception as e:
+                        logger.error(f"Failed to broadcast signal {signal['ticker']}: {e}")
+                        continue  # Continue with next signal
+        
+        except Exception as e:
+            logger.error(f"❌ Signal generation failed: {e}")
+            raise
+
+    async def event_monitor_job(self, interval: str = '1h'):
+        """Run event monitor sweep and trigger ML signals when events fire."""
+
+        if not Config.EVENT_MODE_ENABLED:
+            logger.debug("Event mode disabled - skipping event monitor job")
+            return
+
+        # ============================================================================
+        # MARKET HOURS GATE - Skip if market is closed
+        # ============================================================================
+        if not Config.is_market_open():
+            next_open = Config.get_next_market_open()
+            logger.info(
+                f"🚫 Market CLOSED - Skipping event monitor ({interval}). "
+                f"Next open: {next_open.strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+            return  # Exit early - do not process events on closed market
+        
+        # Market is open - proceed with normal event detection
+        logger.debug(f"✅ Market OPEN - Running event monitor ({interval})")
+        
+        # Check for market state transitions and send alerts
+        self._check_market_state_change()
+
+        logger.info(f"👁️  Starting event monitor sweep: {interval}")
+
+        if not Config.USE_TIINGO_PIPELINE:
+            logger.info("⚠️  ML pipeline disabled - skipping event monitor sweep")
+            return
+
+        if self.event_monitor is None:
+            logger.warning("⚠️  Event monitor not initialized; skipping sweep")
+            return
+
+        symbols = Config.get_symbol_list()
+        if not symbols:
+            logger.info("⚠️  Empty watchlist - no symbols to scan for events")
+            return
+
+        now = datetime.now(timezone.utc)
+        self._prune_symbol_cooldowns(now)
+
+        # ============================================================================
+        # GUARDRAIL 1: FRESHNESS LOG - Detect data drift early (prevents silent 8-day drift)
+        # ============================================================================
+        ohlcv_freshness = "UNKNOWN"
+        feature_freshness = "UNKNOWN"
+        try:
+            # Check OHLCV freshness (use first available symbol)
+            for sym in symbols[:1]:
+                df = self.db.load_ohlcv_data(sym, interval, limit=1)
+                if df is not None and not df.empty:
+                    ohlcv_ts = pd.Timestamp(df.index[-1])
+                    ohlcv_age_minutes = (now - ohlcv_ts).total_seconds() / 60
+                    if ohlcv_age_minutes < 60:
+                        ohlcv_freshness = f"✅ FRESH ({ohlcv_age_minutes:.0f}m)"
+                    elif ohlcv_age_minutes < 180:
+                        ohlcv_freshness = f"⚠️  STALE ({ohlcv_age_minutes:.0f}m)"
+                    else:
+                        ohlcv_freshness = f"🔴 CRITICAL ({ohlcv_age_minutes:.0f}m)"
+                    break
+            
+            # Check feature freshness
+            try:
+                feature_row = self.db.execute_query(
+                    "SELECT MAX(timestamp) FROM features WHERE interval=? LIMIT 1",
+                    (interval,)
+                )
+                if feature_row and feature_row[0][0]:
+                    feature_ts = pd.Timestamp(feature_row[0][0])
+                    feature_age_minutes = (now - feature_ts).total_seconds() / 60
+                    if feature_age_minutes < 60:
+                        feature_freshness = f"✅ FRESH ({feature_age_minutes:.0f}m)"
+                    elif feature_age_minutes < 180:
+                        feature_freshness = f"⚠️  STALE ({feature_age_minutes:.0f}m)"
+                    else:
+                        feature_freshness = f"🔴 CRITICAL ({feature_age_minutes:.0f}m)"
+            except Exception as e:
+                logger.debug(f"Could not check feature freshness: {e}")
+            
+            # Log freshness snapshot for monitoring
+            logger.info(f"📊 MONITOR FRESHNESS: OHLCV={ohlcv_freshness} | Features={feature_freshness} | Time={now.isoformat()}")
+        except Exception as e:
+            logger.error(f"Error checking data freshness: {e}")
+
+        triggered = 0
+        actionable_signals: List[Dict] = []
+        triggered_summary: Dict[str, Dict[str, str]] = {}
+
+        for symbol in symbols:
+            df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+
+            if df is None or df.empty:
+                logger.debug(f"   ⚠️  No OHLCV data available for {symbol} {interval}")
+                continue
+
+            # ============================================================================
+            # DATA FRESHNESS VALIDATION - Skip if data too old
+            # ============================================================================
+            latest_candle_time = pd.Timestamp(df.index[-1])
+            age_minutes = (now - latest_candle_time).total_seconds() / 60
+
+            # Get max age threshold for this interval
+            max_age = Config.OHLCV_MAX_AGE_BY_INTERVAL.get(
+                interval, 
+                Config.OHLCV_MAX_AGE_MINUTES
+            )
+
+            if age_minutes > max_age:
+                logger.warning(
+                    f"⏱️  {symbol} {interval}: Data is STALE "
+                    f"(age: {age_minutes:.0f} min, max: {max_age} min). "
+                    f"Last candle: {latest_candle_time.strftime('%Y-%m-%d %H:%M UTC')}. "
+                    f"Skipping analysis."
+                )
+                continue  # Skip this symbol - data too old
+
+            # Data is fresh - proceed with analysis
+            logger.debug(
+                f"✅ {symbol} {interval}: Data is FRESH "
+                f"(age: {age_minutes:.0f} min < {max_age} min)"
+            )
+
+            events = self.event_monitor.analyze(symbol, interval, df)
+
+            if not events:
+                continue
+
+            # Record that we detected an event (even if cooled down or filtered)
+            # This resets the "no events for X hours" timer for fallback mode
+            self._record_event_detected(symbol, now)
+
+            if self._symbol_in_cooldown(symbol, now):
+                logger.debug(f"   ⏳ Cooldown active for {symbol} - skipping {len(events)} events")
+                continue
+
+            for event in events:
+                # Filter out stale events (older than 24 hours) to prevent repeated signals
+                event_age = now - event.timestamp
+                if event_age.total_seconds() > 86400:  # 24 hours
+                    logger.debug(
+                        f"⏭️  Skipping stale event for {symbol} {interval}: "
+                        f"timestamp={event.timestamp.isoformat()}, age={event_age.total_seconds()/3600:.1f}h"
+                    )
+                    continue
+
+                # ============================================================================
+                # DEDUPLICATION CHECK - Skip if event already processed
+                # ============================================================================
+                event_id = self._generate_event_id(event)
+                
+                if self._is_event_already_processed(event_id):
+                    logger.debug(
+                        f"⏭️  Skipping duplicate event: {event.ticker} {event.interval} "
+                        f"{event.event_type} at {event.timestamp.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    continue  # Skip to next event
+                
+                # Event is NEW - process it
+                logger.info(
+                    f"✨ Processing NEW event: {event.ticker} {event.interval} "
+                    f"{event.event_type} at {event.timestamp.strftime('%Y-%m-%d %H:%M')}"
+                )
+                
+                # Register event in pipeline tracker
+                signal_id = self.pipeline_tracker.register_event(
+                    event.ticker, event.interval, event.event_type
+                )
+
+                metadata = {
+                    'source': 'event_monitor',
+                    'job_id': 'event_monitor',
+                    'interval': interval,
+                    'scan_started': now.isoformat(),
+                }
+
+                try:
+                    async with self._signal_engine_lock:
+                        if self.signal_engine.model is None:
+                            self.signal_engine.load_model()
+                        result = self.signal_engine.handle_event(event, metadata=metadata)
+                except Exception as exc:
+                    logger.error(f"❌ Error handling event for {symbol}: {exc}")
+                    continue
+                
+                # Mark event as processed AFTER successful handling
+                # NEW: Also mark as processed for inference gate rejections
+                # to prevent unnecessary retriggering on sparse instruments
+                # NOTE: result is a list from handle_event
+                if not result:  # Empty list means no signals triggered
+                    # Inference gate rejected — insufficient history
+                    # Mark processed to prevent retrigger on sparse instruments
+                    logging.info(
+                        f"[INFERENCE_GATE] Event {event_id} marked processed "
+                        f"— no signals from event for {symbol}, will not retrigger."
+                    )
+                    self._mark_event_processed(event_id, event)
+                    continue
+                
+                # result is a list of signals from triggered strategies
+                self._mark_event_processed(event_id, event)
+                triggered += 1
+                logger.debug(f"✅ Event marked as processed: {event_id}")
+                
+                event_ts = getattr(event, 'timestamp', None)
+                if hasattr(event_ts, 'isoformat'):
+                    event_time_str = event_ts.isoformat()
+                else:
+                    event_time_str = str(event_ts)
+
+                triggered_summary[symbol] = {
+                    'event_type': event.event_type,
+                    'confidence': f"{event.confidence:.2f}",
+                    'event_time': event_time_str,
+                }
+                self._update_symbol_cooldown(symbol, now)
+
+                # Add all triggered signals to actionable list
+                for sig in result:
+                    if sig.get('signal') != 0 and sig.get('confidence', 0) >= Config.ML_SIGNAL_CONFIDENCE_MIN:
+                        self._record_signal_generated(symbol, now, 'event_monitor')
+                        actionable_signals.append(sig)
+                        
+                        # Track V1 signal generation from event detection
+                        v1_signal_id = f"{sig['ticker']}|{interval}|{sig['timestamp']}|v1"
+                        self.pipeline_tracker.update_stage(
+                            signal_id=v1_signal_id,
+                            stage_name='v1',
+                            direction=sig.get('signal'),
+                            confidence=sig.get('confidence'),
+                        )
+
+                # Only trigger once per symbol per sweep to honour cooldown
+                break
+
+        # ============================================================================
+        # V2 STATE PERSISTENCE - Advance state for all symbols across all intervals
+        # ============================================================================
+        # This ensures that V2 stage continuity persists across sweeps.
+        # Even if no events fire, we advance V2 state and detect confirmations.
+        logger.debug(f"Starting V2 state persistence sweep for {len(symbols)} symbol(s)")
+        
+        v2_signals_found = 0
+        for symbol in symbols:
+            for check_interval in Config.ENTRY_TIMEFRAMES:  # Check configured intervals for V2 state (30m, 1h, 4h)
+                try:
+                    df = self.db.load_ohlcv_data(symbol, check_interval, limit=250)
+                    if df is None or df.empty:
+                        continue
+                    
+                    # Load persisted V2 state
+                    persisted_state = self.db.load_strategy_state(
+                        ticker=symbol,
+                        interval=check_interval,
+                        strategy_name='strategy_core_v2'
+                    )
+                    
+                    # Get the signal engine for V2
+                    from core.strategy_core_v2 import SignalEngine, get_timeframe_config
+                    v2_config = get_timeframe_config(check_interval)
+                    v2_engine = SignalEngine(symbol, check_interval, v2_config)
+                    
+                    # Advance state through new bars
+                    signal, updated_state, confirmation_result = v2_engine.advance_state(
+                        df_ohlcv=df,
+                        persisted_state=persisted_state,
+                        last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
+                    )
+                    
+                    # Save updated state
+                    self.db.save_strategy_state(symbol, check_interval, 'strategy_core_v2', updated_state)
+                    
+                    # If signal was generated, persist it
+                    if signal != 0:  # signal is Signal(-1/0/1) from enum
+                        v2_signals_found += 1
+                        import json
+                        signal_data = {
+                            'timestamp': now.isoformat(),
+                            'ticker': symbol,
+                            'interval': check_interval,
+                            'signal': int(signal),
+                            'confidence': 1.0,
+                            'feature_snapshot': json.dumps({}),  # No features for pure strategy
+                            'model_version': 'strategy_core_v2',
+                            'triggered_by': 'v2_persistence',  # Distinguish from event-based
+                            'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
+                            'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
+                        }
+                        self.db.save_ml_signal(**signal_data)
+                        logger.info(f"[V2_PERSISTENCE] Signal from persistent state: {symbol} {check_interval} {signal.name}")
+                        
+                        # Track V2 persistence signal in pipeline
+                        v2_signal_id = f"{symbol}|{check_interval}|{now.isoformat()}|v2_persistence"
+                        self.pipeline_tracker.update_stage(
+                            signal_id=v2_signal_id,
+                            stage_name='stage3',  # Entry fired
+                            direction=int(signal),
+                            confidence=1.0,
+                        )
+                        # Mark as persisted since we just saved it
+                        self.pipeline_tracker.mark_persisted(signal_id=v2_signal_id)
+                        
+                        # Send alert if configured
+                        if self.telegram_bot and Config.TELEGRAM_SEND_EVENT_ALERTS:
+                            emoji = "🟢" if signal == 1 else "🔴"
+                            message = (
+                                f"{emoji} <b>V2 Persistent Signal</b>\n\n"
+                                f"<b>Symbol:</b> {symbol}\n"
+                                f"<b>Signal:</b> {'BUY' if signal == 1 else 'SELL'}\n"
+                                f"<b>Interval:</b> {check_interval}\n"
+                                f"<b>Trigger:</b> V2 State Persistence\n"
+                                f"<b>Stage:</b> {v2_engine.stage}\n"
+                                f"<b>Time:</b> {now.isoformat()}\n"
+                            )
+                            try:
+                                await _run_blocking(self.telegram_bot.send_message, message)
+                                
+                                # Track broadcast (only after successful send)
+                                try:
+                                    self.pipeline_tracker.mark_broadcast(signal_id=v2_signal_id)
+                                except Exception:
+                                    pass  # Never let tracker crash signal flow
+                            except Exception as e:
+                                logger.error(f"Failed to broadcast V2 persistent signal {symbol}: {e}")
+                        
+                except Exception as e:
+                    logger.debug(f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}")
+                    continue
+        
+        if v2_signals_found > 0:
+            logger.info(f"[V2_PERSISTENCE] Found {v2_signals_found} signal(s) from persistent state advancement")
+
+        if triggered == 0:
+            logger.info("👁️  Event monitor sweep complete - no new triggers")
+        else:
+            logger.info(
+                f"👁️  Event monitor triggered {triggered} event(s) across {len(triggered_summary)} symbol(s)"
+            )
+            for symbol, summary in triggered_summary.items():
+                logger.info(
+                    f"   • {symbol}: {summary['event_type']} (conf={summary['confidence']}, time={summary['event_time']})"
+                )
+
+        if (
+            actionable_signals
+            and self.telegram_bot
+            and Config.TELEGRAM_SEND_EVENT_ALERTS
+        ):
+            for signal in actionable_signals:
+                emoji = "🟢" if signal['signal'] == 1 else "🔴"
+                message = (
+                    f"{emoji} <b>Event Signal Alert</b>\n\n"
+                    f"<b>Symbol:</b> {signal['ticker']}\n"
+                    f"<b>Signal:</b> {signal['signal_label']}\n"
+                    f"<b>Confidence:</b> {signal['confidence']:.1%}\n"
+                    f"<b>Interval:</b> {interval}\n"
+                    f"<b>Model:</b> {signal['model_version']}\n"
+                    f"<b>Trigger:</b> event_monitor\n"
+                    f"<b>Time:</b> {signal['timestamp']}\n\n"
+                    f"<b>📊 Trade Levels:</b>\n"
+                )
+
+                if signal.get('entry_price') is not None:
+                    message += f"<b>Entry:</b> <code>{signal['entry_price']}</code>\n"
+                    message += f"<b>Stop Loss:</b> <code>{signal['stop_loss']}</code>\n"
+                    message += f"<b>Take Profit:</b> <code>{signal['take_profit']}</code>\n"
+                else:
+                    message += "<b>Entry/SL/TP:</b> <i>Calculating...</i>\n"
+
+                try:
+                    await _run_blocking(self.telegram_bot.send_message, message)
+                    
+                    # Track broadcast of event-monitor signal (only after successful send)
+                    try:
+                        event_signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                        self.pipeline_tracker.mark_broadcast(signal_id=event_signal_id)
+                    except Exception:
+                        pass  # Never let tracker crash signal flow
+                except Exception as e:
+                    logger.error(f"Failed to broadcast event signal {signal['ticker']}: {e}")
+                    continue  # Continue with next signal
+
+    
+    async def time_based_fallback_job(self, interval: str = '1h'):
+        """
+        TIME-BASED FALLBACK DISABLED
+        
+        This job is now disabled in favor of pure event-driven architecture.
+        All signals are generated via event_monitor_job only.
+        """
+        logger.info("[DISABLED] Time-based fallback job is disabled - use event-driven mode only")
+        return
+    
+    async def eod_pipeline_job(self):
+        """
+        End-of-day pipeline job
+        
+        Tasks:
+        1. Generate features for all symbols
+        2. Train/retrain XGBoost model
+        3. Cleanup old data (>90 days)
+        4. Send summary report
+        """
+        logger.info(f"🌙 Starting EOD pipeline job")
+        
+        if not Config.USE_TIINGO_PIPELINE:
+            logger.info(f"⚠️  ML pipeline disabled - skipping EOD job")
+            return
+        
+        summary = {
+            'features_generated': 0,
+            'model_trained': False,
+            'model_accuracy': 0.0,
+            'data_cleaned': 0,
+            'errors': []
+        }
+        
+        try:
+            # 1. Generate features for all symbols (1h interval)
+            logger.info(f"1️⃣  Generating features...")
+            try:
+                results = self.feature_engine.process_all_tickers('1h')
+                summary['features_generated'] = len(results)
+                logger.info(f"   ✅ Features: {len(results)} symbols")
+            except Exception as e:
+                logger.error(f"   ❌ Feature generation failed: {e}")
+                summary['errors'].append(f"Features: {str(e)}")
+            
+            # 2. Train model
+            logger.info(f"2️⃣  Training XGBoost model...")
+            try:
+                trainer = XGBTrainer()
+                model = trainer.train_pipeline(interval='1h', days=90)
+                
+                if model:
+                    summary['model_trained'] = True
+                    # Get accuracy from metadata
+                    import json
+                    with open(Config.MODEL_METADATA_PATH, 'r') as f:
+                        metadata = json.load(f)
+                        summary['model_accuracy'] = metadata['metrics']['accuracy']
+                    logger.info(f"   ✅ Model trained: {summary['model_accuracy']:.2%} accuracy")
+                else:
+                    logger.warning(f"   ⚠️  Model not deployed (accuracy < threshold)")
+            except Exception as e:
+                logger.error(f"   ❌ Model training failed: {e}")
+                summary['errors'].append(f"Training: {str(e)}")
+            
+            # 3. Cleanup old data
+            logger.info(f"3️⃣  Cleaning up old data...")
+            try:
+                self.db.cleanup_old_data(days=90)
+                logger.info(f"   ✅ Cleanup complete")
+            except Exception as e:
+                logger.error(f"   ❌ Cleanup failed: {e}")
+                summary['errors'].append(f"Cleanup: {str(e)}")
+            
+            # 4. Send summary report
+            if self.telegram_bot and Config.TELEGRAM_SEND_EOD_REPORTS:
+                status_emoji = "✅" if len(summary['errors']) == 0 else "⚠️"
+                message = (
+                    f"{status_emoji} <b>EOD Pipeline Report</b>\n\n"
+                    f"<b>Features Generated:</b> {summary['features_generated']} symbols\n"
+                    f"<b>Model Training:</b> {'✅ Success' if summary['model_trained'] else '❌ Failed'}\n"
+                    f"<b>Model Accuracy:</b> {summary['model_accuracy']:.1%}\n"
+                    f"<b>Data Cleanup:</b> ✅ Complete\n"
+                )
+                
+                if summary['errors']:
+                    message += f"\n<b>Errors:</b> {len(summary['errors'])}\n"
+                    for error in summary['errors'][:3]:  # Show first 3 errors
+                        message += f"  • {error}\n"
+                
+                await _run_blocking(self.telegram_bot.send_message, message)
+            
+            logger.info(f"✅ EOD pipeline complete")
+        
+        except Exception as e:
+            logger.error(f"❌ EOD pipeline failed: {e}")
+            raise
+    
+    def generate_health_report(self) -> str:
+        """
+        Generate professional health report in specified format.
+        
+        Returns:
+            Formatted health report string ready for Telegram
+        """
+        from datetime import datetime, timezone, timedelta
+        import sqlite3
+        import os
+        
+        now = datetime.now(timezone.utc)
+        timestamp_utc = now.strftime('%Y-%m-%d %H:%M UTC')
+        
+        # Query V1 and V2 signals (last 24h)
+        v1_count = 0
+        v2_count = 0
+        try:
+            v1_result = self.db.execute_query(
+                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='strategy_core_v1' AND datetime(timestamp) > datetime('now', '-1 day')"
+            )
+            v1_count = v1_result[0][0] if v1_result else 0
+            
+            v2_result = self.db.execute_query(
+                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_persistence' AND datetime(timestamp) > datetime('now', '-1 day')"
+            )
+            v2_count = v2_result[0][0] if v2_result else 0
+        except Exception as e:
+            logger.debug(f"Could not query signal counts: {e}")
+        
+        total_count = v1_count + v2_count
+        
+        # Query V2 strategy state breakdown
+        stage_1a = []
+        stage_1b = []
+        stage_1c = []
+        stage_2 = []
+        scanning = []
+        
+        try:
+            conn = sqlite3.connect(Config.DB_PATH)
+            cur = conn.cursor()
+            cur.execute('''
+                SELECT ticker, interval,
+                       bull_entry_armed, bear_entry_armed,
+                       bull_retest_done, bear_retest_done,
+                       bull_break_bar, bear_break_bar,
+                       bull_extreme_visited, bear_extreme_visited
+                FROM strategy_state
+                ORDER BY ticker, interval
+            ''')
+            rows = cur.fetchall()
+            conn.close()
+            
+            for row in rows:
+                (ticker, interval, bull_entry_armed, bear_entry_armed,
+                 bull_retest_done, bear_retest_done,
+                 bull_break_bar, bear_break_bar,
+                 bull_extreme_visited, bear_extreme_visited) = row
+                
+                sym_key = f"{ticker}({interval})"
+                
+                if bull_entry_armed or bear_entry_armed:
+                    stage_2.append(sym_key)
+                elif bull_retest_done or bear_retest_done:
+                    stage_1c.append(sym_key)
+                elif (bull_break_bar is not None) or (bear_break_bar is not None):
+                    stage_1b.append(sym_key)
+                elif bull_extreme_visited or bear_extreme_visited:
+                    stage_1a.append(sym_key)
+                else:
+                    scanning.append(sym_key)
+        except Exception as e:
+            logger.debug(f"Could not query V2 state: {e}")
+        
+        # Format symbols (≤5 show all, >5 show first 3 + count)
+        def format_symbols(syms):
+            if len(syms) == 0:
+                return "(none)"
+            elif len(syms) <= 5:
+                return ", ".join(sorted(syms))
+            else:
+                first_3 = sorted(syms)[:3]
+                remaining = len(syms) - 3
+                return f"{', '.join(first_3)} +{remaining} more"
+        
+        stage_1a_formatted = format_symbols(stage_1a)
+        stage_1b_formatted = format_symbols(stage_1b)
+        stage_1c_formatted = format_symbols(stage_1c)
+        stage_2_formatted = format_symbols(stage_2)
+        
+        # Get database info
+        db_size_mb = 0
+        try:
+            if os.path.exists(Config.DB_PATH):
+                db_size_mb = os.path.getsize(Config.DB_PATH) / (1024 * 1024)
+        except:
+            pass
+        
+        # Get last signal timestamp
+        last_signal_time = "N/A"
+        try:
+            last_sig = self.db.execute_query(
+                "SELECT timestamp FROM ml_signals ORDER BY timestamp DESC LIMIT 1"
+            )
+            if last_sig:
+                last_ts = pd.Timestamp(last_sig[0][0])
+                last_signal_time = last_ts.strftime('%H:%M UTC')
+        except:
+            pass
+        
+        # Get 24h signal count
+        signals_24h = total_count
+        
+        # Calculate total active stages
+        total_active_stages = len(stage_1a) + len(stage_1b) + len(stage_1c) + len(stage_2)
+        
+        # Determine health status
+        health_emoji = "✅"
+        engine_emoji = "🟢"
+        if v1_count == 0 and v2_count == 0:
+            health_warning = "\n⚠️  No signals generated in last 24h"
+        else:
+            health_warning = ""
+        
+        # Build report
+        report = f"""{"─" * 40}
+🏥 SILENT ANALYST HEALTH REPORT
+{"─" * 40}
+📅 {timestamp_utc}
+
+{"━" * 40}
+📊 SIGNAL PERFORMANCE (24h)
+{"━" * 40}
+🔮 V1 (5-Condition):  {v1_count:>3} signals
+⚙️  V2 (RSI Machine):  {v2_count:>3} signals
+📈 Total Generated:    {total_count:>3} signals{health_warning}
+
+{"━" * 40}
+📈 V2 STATE MACHINE (42 Pairs Total)
+{"━" * 40}
+
+🎯 STAGE 1A - Extreme Visit
+   Count: {len(stage_1a):>2}
+   Symbols: {stage_1a_formatted}
+
+🔄 STAGE 1B - RSI Break
+   Count: {len(stage_1b):>2}
+   Symbols: {stage_1b_formatted}
+
+✔️  STAGE 1C - Retest Complete
+   Count: {len(stage_1c):>2}
+   Symbols: {stage_1c_formatted}
+
+🚪 STAGE 2 - Entry Window Armed ⚡
+   Count: {len(stage_2):>2}
+   Active: {stage_2_formatted}
+
+🔍 SCANNING
+   Count: {len(scanning):>2}
+
+{"━" * 40}
+💾 SYSTEM STATUS
+{"━" * 40}
+Database:  {db_size_mb:.0f}MB │ Signals: {signals_24h:>3}
+Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
+
+{"━" * 40}
+📋 QUICK SUMMARY
+{"━" * 40}
+- {len(stage_2)} pairs ready for entry confirmation
+- {total_active_stages} total pairs tracked in V2
+- Next signal: When Stage 2 EMA break occurs
+- Last signal: {last_signal_time}
+
+{"─" * 40}"""
+        
+        return report
+    
+    async def health_check_job(self):
+        """
+        System health check - runs 4× daily (every 6 hours).
+        
+        Generates and sends professional health report to Telegram.
+        """
+        from datetime import datetime, timezone
+        
+        now = datetime.now(timezone.utc)
+        logger.info("=" * 60)
+        logger.info(f"🏥 HEALTH CHECK STARTED: {now.strftime('%Y-%m-%d %H:%M UTC')}")
+        logger.info("=" * 60)
+        
+        try:
+            # Generate professional health report
+            report = self.generate_health_report()
+            
+            # Log to console
+            logger.info("\n" + report)
+            
+            # Send to Telegram if enabled
+            if self.enable_telegram and Config.TELEGRAM_SEND_HEALTH_REPORTS:
+                try:
+                    await _run_blocking(self.telegram_bot.send_message, report)
+                    logger.info("✅ Health report sent to Telegram")
+                except Exception as e:
+                    logger.error(f"Failed to send health report to Telegram: {e}")
+            
+            logger.info("=" * 60)
+            logger.info("🏥 HEALTH CHECK COMPLETED")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"Health check failed: {e}", exc_info=True)
+            
+            # Send error alert to Telegram
+            if self.enable_telegram and Config.TELEGRAM_SEND_ERROR_ALERTS:
+                try:
+                    await _run_blocking(
+                        self.telegram_bot.send_message,
+                        f"🚨 HEALTH CHECK FAILED\n\n"
+                        f"Error: {str(e)}\n"
+                        f"Time: {now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                        f"Check logs immediately!"
+                    )
+                except:
+                    pass
+    
+    # Heartbeat job removed - not needed at the moment (was writing logs/last_heartbeat.txt every 5 min)
+    
+    # ==========================================
+    # SCHEDULER CONFIGURATION
+    # ==========================================
+    
+    def register_jobs(self):
+        """Register all scheduled jobs"""
+        logger.info(f"📋 Registering scheduler jobs...")
+        
+        # Job 0: Heartbeat removed (not needed at the moment)
+        
+        # Job 0a: Fetch 30m data every 30 minutes (at :00 and :30 UTC)
+        self.scheduler.add_job(
+            self.fetch_tiingo_data,
+            trigger=CronTrigger(minute='0,30', timezone='UTC'),
+            args=['30m'],
+            id='fetch_30m',
+            name='Fetch 30m Tiingo Data',
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300
+        )
+        logger.info(f"   ✅ Job registered: fetch_30m (every 30 min at :00/:30 UTC)")
+        
+        # Job 1b: Fetch 4h data every 4 hours (at :00 UTC)
+        self.scheduler.add_job(
+            self.fetch_tiingo_data,
+            trigger=CronTrigger(minute=0, hour='*/4', timezone='UTC'),
+            args=['4h'],
+            id='fetch_4h',
+            name='Fetch 4h Tiingo Data',
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300
+        )
+        logger.info(f"   ✅ Job registered: fetch_4h (every 4 hours at :00 UTC)")
+        
+        # Job 1c: Fetch 1h data every hour (at :10 UTC - race-safe offset before event_monitor_1h at :15 UTC)
+        self.scheduler.add_job(
+            self.fetch_tiingo_data,
+            trigger=CronTrigger(minute=10, timezone='UTC'),
+            args=['1h'],
+            id='fetch_1h',
+            name='Fetch 1h Tiingo Data',
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300
+        )
+        logger.info(f"   ✅ Job registered: fetch_1h (every hour at :10 UTC, race-safe offset before event_monitor_1h)")
+        
+        # Job 2: Optional time-based signal generation (disabled by default)
+        if Config.ENABLE_TIME_TRIGGERED_SIGNALS:
+            self.scheduler.add_job(
+                self.generate_signals_job,
+                trigger=CronTrigger(minute=5, hour='*'),
+                args=['30m'],
+                id='generate_signals',
+                name='Generate ML Signals',
+                max_instances=1,
+                coalesce=True
+            )
+            logger.info(f"   ✅ Job registered: generate_signals (hourly at :05)")
+        else:
+            logger.info("   ⏭️  Skipping generate_signals time job (event-driven mode)")
+
+        # Job 3: Event monitor sweep with fixed cron timing (not relative to service start)
+        if Config.EVENT_MODE_ENABLED:
+            # 30m event monitor - every 15 minutes, 5 minutes AFTER fetch completes (:05, :20, :35, :50 UTC)
+            # This prevents race condition where monitor runs before fetch data is written
+            self.scheduler.add_job(
+                self.event_monitor_job,
+                trigger=CronTrigger(minute='5,20,35,50', timezone='UTC'),
+                args=['30m'],
+                id='event_monitor_30m',
+                name='Event Monitor Sweep (30m)',
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
+            )
+            logger.info(f"   ✅ Job registered: event_monitor_30m (every 15 min, race-safe: :05, :20, :35, :50 UTC)")
+            
+            # 1h event monitor - every hour at :15 UTC (race-safe offset after 30m)
+            self.scheduler.add_job(
+                self.event_monitor_job,
+                trigger=CronTrigger(minute=15, timezone='UTC'),
+                args=['1h'],
+                id='event_monitor_1h',
+                name='Event Monitor Sweep (1h)',
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
+            )
+            logger.info(f"   ✅ Job registered: event_monitor_1h (every hour at :15 UTC, race-safe offset)")
+            
+            # 4h event monitor - every hour, 5 minutes AFTER fetch completes (:05 UTC)
+            self.scheduler.add_job(
+                self.event_monitor_job,
+                trigger=CronTrigger(minute=5, timezone='UTC'),
+                args=['4h'],
+                id='event_monitor_4h',
+                name='Event Monitor Sweep (4h)',
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=120,
+            )
+            logger.info(f"   ✅ Job registered: event_monitor_4h (every hour at :05 UTC, race-safe offset)")
+
+        # Job 4c: Time-based fallback DISABLED (March 1, 2026)
+        # Pure event-driven architecture only - no time-based fallback signals
+        # logger.info(f"   ⏸️  Job DISABLED: time_based_fallback_4h (disabled by design - event-driven only)")
+
+        # Job 5: EOD pipeline at 23:00 UTC
+        self.scheduler.add_job(
+            self.eod_pipeline_job,
+            trigger=CronTrigger(hour=23, minute=0, timezone='UTC'),
+            id='eod_pipeline',
+            name='EOD Pipeline (Features + Training)',
+            max_instances=1
+        )
+        logger.info(f"   ✅ Job registered: eod_pipeline (23:00 UTC)")
+
+        # Job 6: Health check every 6 hours at 00:12, 06:12, 12:12, 18:12 UTC (4× daily, 12min offset to avoid job collisions)
+        self.scheduler.add_job(
+            self.health_check_job,
+            trigger=CronTrigger(hour='0,6,12,18', minute=12, timezone='UTC'),
+            id='health_check',
+            name='System Health Check',
+            max_instances=1
+        )
+        logger.info(f"   ✅ Job registered: health_check (00:12, 06:12, 12:12, 18:12 UTC - 4× daily, race-safe offset)")
+        
+        # Job 7: Event deduplication cleanup (every 6 hours)
+        self.scheduler.add_job(
+            self._cleanup_old_event_ids,
+            trigger=CronTrigger(minute=0, hour='*/6', timezone='UTC'),
+            id='event_dedup_cleanup',
+            name='Event Deduplication Cleanup',
+            replace_existing=True
+        )
+        logger.info(f"   ✅ Job registered: event_dedup_cleanup (every 6h)")
+        
+        total_jobs = len(self.scheduler.get_jobs())
+        logger.info(f"✅ All jobs registered ({total_jobs} total)")
+    
+    def start(self):
+        """Start the scheduler"""
+        logger.info(f"\n{'='*70}")
+        logger.info(f"  🚀 STARTING ML PIPELINE SCHEDULER")
+        logger.info(f"{'='*70}\n")
+        
+        if not Config.USE_TIINGO_PIPELINE:
+            logger.warning(f"⚠️  USE_TIINGO_PIPELINE = False")
+            logger.warning(f"   Jobs will run but skip operations")
+            logger.warning(f"   Set to True in core/config.py to enable\n")
+        
+        # Bootstrap strategy state (ensure all symbol×interval rows exist)
+        logger.info(f"⚙️  Bootstrapping strategy_state table...")
+        self.db.bootstrap_strategy_state()
+        
+        self.register_jobs()
+        self.scheduler.start()
+        
+        # Print schedule
+        self.print_schedule()
+        
+        logger.info(f"\n✅ Scheduler started - Press Ctrl+C to stop\n")
+    
+    def stop(self):
+        """Stop the scheduler"""
+        logger.info(f"🛑 Stopping scheduler...")
+        self.scheduler.shutdown()
+        logger.info(f"✅ Scheduler stopped")
+    
+    def print_schedule(self):
+        """Print scheduled jobs"""
+        logger.info(f"\n📅 Scheduled Jobs:")
+        logger.info(f"{'='*70}")
+        
+        jobs = self.scheduler.get_jobs()
+        for job in jobs:
+            next_run = job.next_run_time
+            logger.info(f"   {job.name}")
+            logger.info(f"      Next run: {next_run}")
+            logger.info(f"      Trigger: {job.trigger}")
+        
+        logger.info(f"{'='*70}\n")
+    
+    def get_job_stats(self):
+        """Get job execution statistics"""
+        return self.job_stats
+
+
+async def main():
+    """Run scheduler"""
+    scheduler = MLPipelineScheduler(enable_telegram=Config.TELEGRAM_NOTIFICATIONS_ENABLED)
+    
+    try:
+        scheduler.start()
+        
+        # Keep running
+        while True:
+            await asyncio.sleep(1)
+    
+    except KeyboardInterrupt:
+        logger.info(f"\n⚠️  Keyboard interrupt received")
+        scheduler.stop()
+    
+    except Exception as e:
+        logger.error(f"❌ Scheduler error: {e}")
+        scheduler.stop()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

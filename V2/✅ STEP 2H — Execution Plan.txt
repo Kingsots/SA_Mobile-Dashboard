@@ -1,0 +1,222 @@
+✅ STEP 2H — CONSOLIDATED LEAKAGE FIX
+Three Patches in One Execution Plan (drop cols + TSSplit + CV guard)
+
+You will run ONLY these commands, exactly as given.
+
+⚠️ BEFORE YOU START
+
+You MUST be inside VS Code Remote-SSH or your normal SSH terminal.
+
+Replace key path if needed:
+
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32
+
+🟦 PATCH 1 — Drop Suspicious Columns (defensive auto-clean)
+
+This patch modifies xgb_signal_engine.py so that before any hourly signal, the bot removes columns that typically cause leakage:
+
+timestamp
+
+created_at
+
+date
+
+next_close
+
+next_open
+
+next_return
+
+future_return
+
+lead_*
+
+target_next_*
+
+Run this block:
+
+INPUT (copy–paste)
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32 <<'SSH'
+cd ~/opticore-bot
+
+# Backup
+cp signals/xgb_signal_engine.py signals/xgb_signal_engine.py.bak_$(date +%Y%m%d_%H%M%S)
+
+# Apply patch
+python3 <<'PY'
+import re
+path = "signals/xgb_signal_engine.py"
+txt = open(path).read()
+
+pattern = "features_snapshot = df_features.iloc"
+if pattern not in txt:
+    print("❌ Pattern not found — STOP. Share file.")
+else:
+    patch = r"""
+        # --- LEAKAGE PREVENTION PATCH ---
+        # Drop suspicious/leaking columns before feature snapshot
+        leak_cols = [
+            'timestamp','created_at','date',
+            'next_close','next_open','next_return','future_return',
+        ]
+        # Drop any column that starts with lead_ or target_next_
+        leak_cols += [c for c in df_features.columns if c.startswith('lead_') or c.startswith('target_next_')]
+        df_features = df_features.drop(columns=leak_cols, errors='ignore')
+
+        # Keep ONLY numeric features (defensive)
+        df_features = df_features.select_dtypes(include=['number'])
+        # ---------------------------------
+    """
+
+    new = re.sub(r"(features_snapshot\s*=\s*df_features\.iloc\[-1\]\.to_dict\(\))",
+                 patch + r"\n        \1", txt)
+
+    open(path, "w").write(new)
+    print("✅ Leakage Patch Applied: drop suspicious columns")
+PY
+
+git add signals/xgb_signal_engine.py
+git commit -m "LeakFix Patch 1: drop suspicious columns"
+SSH
+
+EXPECTED OUTPUT
+Backup created
+✅ Leakage Patch Applied: drop suspicious columns
+[master 2h-leakfix1] LeakFix Patch 1...
+
+🟦 PATCH 2 — Add TimeSeriesSplit CV to trainer (core fix)
+
+We replace the random CV with strict time-series CV.
+
+INPUT
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32 <<'SSH'
+cd ~/opticore-bot
+cp core/xgb_trainer.py core/xgb_trainer.py.bak_$(date +%Y%m%d_%H%M%S)
+
+python3 <<'PY'
+import re
+path = "core/xgb_trainer.py"
+txt = open(path).read()
+
+insert_after = "from sklearn.model_selection import"
+patch_imports = """
+from sklearn.model_selection import TimeSeriesSplit
+"""
+
+txt = txt.replace(insert_after, insert_after + patch_imports)
+
+# Replace CV logic
+txt = re.sub(
+    r"cv_scores\s*=\s*cross_val_score.*?\)",
+    "ts = TimeSeriesSplit(n_splits=5)\n        cv_scores = cross_val_score(model, X_train, y_train, cv=ts)",
+    txt,
+    flags=re.S
+)
+
+open(path,"w").write(txt)
+print("✅ TimeSeriesSplit Patch Applied")
+PY
+
+git add core/xgb_trainer.py
+git commit -m "LeakFix Patch 2: use TimeSeriesSplit CV"
+SSH
+
+EXPECTED OUTPUT
+Backup created
+✅ TimeSeriesSplit Patch Applied
+[master 2h-leakfix2] LeakFix Patch 2...
+
+🟦 PATCH 3 — Add UPPER CV GUARD
+
+Abort deploy if CV > 95%.
+
+INPUT
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32 <<'SSH'
+cd ~/opticore-bot
+
+python3 <<'PY'
+import re
+path = "core/xgb_trainer.py"
+txt = open(path).read()
+
+guard = r"""
+        # --- UPPER CV GUARD (Leak Detection) ---
+        if cv_mean > 0.95:
+            logger.error(f"🚨 CV TOO HIGH ({cv_mean:.2%}) — LIKELY LEAKAGE. Aborting training.")
+            return None
+        # ---------------------------------------
+"""
+
+txt = txt.replace("logger.info(f\"V2 Metrics:", guard + "\n        logger.info(f\"V2 Metrics:")
+
+open(path, "w").write(txt)
+print("✅ Upper-CV Guard Inserted")
+PY
+
+git add core/xgb_trainer.py
+git commit -m "LeakFix Patch 3: upper CV guard"
+SSH
+
+EXPECTED OUTPUT
+✅ Upper-CV Guard Inserted
+[master 2h-leakfix3] LeakFix Patch 3...
+
+🟩 FINAL STEP — FORCE EOD + REBUILD MODEL WITH NEW LOGIC
+
+This is the important part: rebuild features → retrain → validate CV (with upper guard).
+
+INPUT
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32 <<'SSH'
+cd ~/opticore-bot
+source .venv/bin/activate
+
+python3 - <<'PY'
+import asyncio
+from async_scheduler import MLPipelineScheduler
+print("🚀 Running EOD pipeline...")
+asyncio.run(MLPipelineScheduler(enable_telegram=False).eod_pipeline_job())
+print("✅ EOD complete")
+PY
+SSH
+
+EXPECTED OUTPUT
+
+You want to see this pattern:
+
+🚀 Running EOD pipeline...
+Raw CV scores: [0.72, 0.81, 0.78, 0.84, 0.69]
+CV mean: ~0.75 (±0.06)
+Validation acc: 0.70–0.85
+No UPPER CV alert fired
+MODEL SAVED
+
+
+If you see:
+
+🚨 CV TOO HIGH (99.93%) — LIKELY LEAKAGE. Aborting training.
+
+
+→ Perfect — the guard is working → leakage still exists → next step is “LeakFix Deep Dive”.
+
+🟦 FINAL TEST — GENERATE SIGNALS WITH CLEAN FEATURES
+ssh -i "C:\Users\ozodi\Downloads\opticore-key.pem" ubuntu@52.90.60.32 <<'SSH'
+cd ~/opticore-bot
+source .venv/bin/activate
+
+python3 - <<'PY'
+import asyncio
+from async_scheduler import MLPipelineScheduler
+print("🚀 Generating test signals...")
+asyncio.run(MLPipelineScheduler(enable_telegram=False).generate_signals_job())
+PY
+SSH
+
+Expected:
+
+0 to 5 signals (NOT 12)
+
+Confidence around 0.55–0.85, not 0.99
+
+Telegram muted (we disabled it for the test)
+
+If signals appear with 99% again → leakage persists (expected) — bring the logs.

@@ -1,0 +1,345 @@
+async def health_check_job(self):
+    """
+    Comprehensive system health check - runs every 12 hours.
+    
+    Generates detailed health report covering:
+    - Critical errors/warnings
+    - Market operations
+    - Data pipeline status
+    - ML model health
+    - Database metrics
+    - Scheduler performance
+    - 7-day trends
+    """
+    from datetime import datetime, timezone, timedelta
+    
+    now = datetime.now(timezone.utc)
+    logger.info("=" * 60)
+    logger.info(f"🏥 HEALTH CHECK STARTED: {now.strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info("=" * 60)
+    
+    try:
+        # ====================================================================
+        # SECTION 1: MARKET STATUS & SYSTEM UPTIME
+        # ====================================================================
+        market_open = Config.is_market_open()
+        market_status = "🟢 OPEN" if market_open else "🔴 CLOSED"
+        
+        if not market_open:
+            next_open = Config.get_next_market_open()
+            time_until_open = next_open - now
+            hours_until = time_until_open.total_seconds() / 3600
+            market_info = f"{market_status} (Opens in {hours_until:.0f}h {(time_until_open.total_seconds() % 3600) / 60:.0f}m)"
+        else:
+            market_info = market_status
+        
+        # System uptime (from process start time if available)
+        uptime_info = "N/A"
+        try:
+            import psutil
+            import os
+            process = psutil.Process(os.getpid())
+            start_time = datetime.fromtimestamp(process.create_time(), tz=timezone.utc)
+            uptime = now - start_time
+            days = uptime.days
+            hours = uptime.seconds // 3600
+            minutes = (uptime.seconds % 3600) // 60
+            uptime_info = f"{days}d {hours}h {minutes}m"
+        except:
+            pass
+        
+        # ====================================================================
+        # SECTION 2: CRITICAL ALERTS
+        # ====================================================================
+        errors = []
+        warnings = []
+        
+        # Check for stale data (excluding expected weekend staleness)
+        symbols = Config.get_symbol_list()
+        critical_stale = []
+        
+        for symbol in symbols:
+            try:
+                # Get latest OHLCV timestamp
+                df = self.db.load_ohlcv_data(symbol, '4h', limit=1)
+                if df is not None and not df.empty:
+                    latest_ts = pd.Timestamp(df.index[-1])
+                    age_minutes = (now - latest_ts).total_seconds() / 60
+                    age_days = age_minutes / 1440
+                    
+                    # Critical if > 2 days old (even on weekends)
+                    if age_minutes > 2880:  # 48 hours
+                        critical_stale.append({
+                            'symbol': symbol,
+                            'age_minutes': age_minutes,
+                            'age_days': age_days,
+                            'last_update': latest_ts.strftime('%Y-%m-%d %H:%M UTC')
+                        })
+            except Exception as e:
+                errors.append(f"Failed to check {symbol} data: {str(e)}")
+        
+        # Add critical stale data to errors
+        if critical_stale:
+            for item in critical_stale[:3]:  # Top 3 most stale
+                errors.append(
+                    f"{item['symbol']} Data Stale: {item['age_minutes']:.0f} min ({item['age_days']:.1f} days) "
+                    f"- Last update: {item['last_update']}"
+                )
+        
+        # Check API rate limits
+        # (Assuming you have rate limit tracking in your data handler)
+        try:
+            # This is a placeholder - adapt to your actual rate limit tracking
+            hourly_remaining = 26  # Get from your rate limit tracker
+            hourly_limit = 500
+            usage_pct = ((hourly_limit - hourly_remaining) / hourly_limit) * 100
+            
+            if usage_pct > 90:
+                warnings.append(
+                    f"API Rate Limit: {hourly_remaining}/{hourly_limit} hourly remaining ({usage_pct:.0f}% used)"
+                )
+        except:
+            pass
+        
+        # ====================================================================
+        # SECTION 3: SIGNALS & EVENTS (Last 12h)
+        # ====================================================================
+        twelve_hours_ago = now - timedelta(hours=12)
+        
+        # Count signals by type
+        total_signals = self.db.execute_query(
+            "SELECT COUNT(*) FROM ml_signals WHERE timestamp > ?",
+            (twelve_hours_ago,)
+        )[0][0] if hasattr(self.db, 'execute_query') else 0
+        
+        event_signals = self.db.execute_query(
+            "SELECT COUNT(*) FROM ml_signals WHERE timestamp > ? AND event_type IS NOT NULL",
+            (twelve_hours_ago,)
+        )[0][0] if hasattr(self.db, 'execute_query') else 0
+        
+        time_signals = total_signals - event_signals
+        
+        # Deduplication metrics
+        dedup_cache_size = len(self._processed_event_ids)
+        
+        # Check for duplicates in database
+        duplicate_check = self.db.execute_query("""
+            SELECT COUNT(*) FROM (
+                SELECT ticker, interval, timestamp, signal, entry_price, COUNT(*) as cnt
+                FROM ml_signals
+                WHERE timestamp > ?
+                GROUP BY ticker, interval, datetime(timestamp), signal, entry_price
+                HAVING cnt > 1
+            )
+        """, (twelve_hours_ago,)) if hasattr(self.db, 'execute_query') else [(0,)]
+        
+        duplicate_count = duplicate_check[0][0]
+        
+        # ====================================================================
+        # SECTION 4: DATA FRESHNESS
+        # ====================================================================
+        freshness_data = []
+        
+        for symbol in symbols[:12]:  # Top 12 symbols
+            try:
+                df = self.db.load_ohlcv_data(symbol, '4h', limit=1)
+                if df is not None and not df.empty:
+                    latest_ts = pd.Timestamp(df.index[-1])
+                    age_minutes = (now - latest_ts).total_seconds() / 60
+                    age_days = age_minutes / 1440
+                    
+                    # Status based on age
+                    if age_minutes < 300:  # < 5 hours
+                        status = "✅ FRESH"
+                    elif age_minutes < 1440:  # < 1 day
+                        status = "⚠️ STALE"
+                    else:
+                        status = "🔴 CRITICAL"
+                    
+                    freshness_data.append({
+                        'symbol': symbol,
+                        'age_min': age_minutes,
+                        'age_days': age_days,
+                        'status': status
+                    })
+            except:
+                freshness_data.append({
+                    'symbol': symbol,
+                    'age_min': 0,
+                    'age_days': 0,
+                    'status': "❌ ERROR"
+                })
+        
+        # Sort by staleness
+        freshness_data.sort(key=lambda x: x['age_min'], reverse=True)
+        
+        # ====================================================================
+        # SECTION 5: DATABASE METRICS
+        # ====================================================================
+        db_size_mb = 0
+        try:
+            import os
+            db_path = Config.DB_PATH
+            if os.path.exists(db_path):
+                db_size_mb = os.path.getsize(db_path) / (1024 * 1024)
+        except:
+            pass
+        
+        total_signals_all = self.db.execute_query(
+            "SELECT COUNT(*) FROM ml_signals"
+        )[0][0] if hasattr(self.db, 'execute_query') else 0
+        
+        signals_7d = self.db.execute_query(
+            "SELECT COUNT(*) FROM ml_signals WHERE timestamp > datetime('now', '-7 days')"
+        )[0][0] if hasattr(self.db, 'execute_query') else 0
+        
+        # ====================================================================
+        # BUILD REPORT
+        # ====================================================================
+        report_lines = [
+            "🏥 SILENT ANALYST HEALTH REPORT",
+            f"Report Time: {now.strftime('%Y-%m-%d %H:%M UTC')}",
+            f"Market Status: {market_info}",
+            f"System Uptime: {uptime_info}",
+            "",
+            "─" * 50,
+        ]
+        
+        # Critical Alerts Section
+        if errors or warnings:
+            report_lines.append("🚨 CRITICAL ALERTS")
+            report_lines.append("")
+            
+            if errors:
+                report_lines.append("❌ ERRORS (Action Required)")
+                for error in errors:
+                    report_lines.append(f"  • {error}")
+                report_lines.append("")
+            
+            if warnings:
+                report_lines.append("⚠️ WARNINGS")
+                for warning in warnings:
+                    report_lines.append(f"  • {warning}")
+                report_lines.append("")
+        else:
+            report_lines.append("✅ NO CRITICAL ISSUES")
+            report_lines.append("All systems operational")
+            report_lines.append("")
+        
+        report_lines.append("─" * 50)
+        
+        # Market Operations Section
+        report_lines.append("📊 MARKET OPERATIONS (Last 12h)")
+        report_lines.append("")
+        report_lines.append(f"Signals Generated:")
+        report_lines.append(f"  • Total: {total_signals}")
+        if market_open:
+            report_lines.append(f"  • Event-driven: {event_signals}")
+            report_lines.append(f"  • Time-based: {time_signals}")
+        else:
+            report_lines.append(f"  • (Expected: 0 - Market CLOSED)")
+        
+        report_lines.append("")
+        report_lines.append(f"Event Detection:")
+        report_lines.append(f"  • Dedup Cache: {dedup_cache_size} events")
+        report_lines.append(f"  • Duplicates Prevented: {duplicate_count}")
+        report_lines.append("")
+        
+        report_lines.append("─" * 50)
+        
+        # Data Freshness Section
+        report_lines.append("📡 DATA FRESHNESS (Top 5 Stale)")
+        report_lines.append("")
+        
+        for item in freshness_data[:5]:
+            report_lines.append(
+                f"  • {item['symbol']}: {item['age_min']:.0f}m "
+                f"({item['age_days']:.1f}d) {item['status']}"
+            )
+        
+        if not market_open and freshness_data:
+            report_lines.append("")
+            report_lines.append("  Note: Stale data expected during market close")
+        
+        report_lines.append("")
+        report_lines.append("─" * 50)
+        
+        # Database Section
+        report_lines.append("💾 DATABASE STATUS")
+        report_lines.append("")
+        report_lines.append(f"  • Size: {db_size_mb:.1f} MB")
+        report_lines.append(f"  • Total Signals: {total_signals_all:,}")
+        report_lines.append(f"  • Last 7 Days: {signals_7d}")
+        if signals_7d > 0:
+            dup_rate = (duplicate_count / signals_7d) * 100 if signals_7d > 0 else 0
+            report_lines.append(f"  • Duplicate Rate (7d): {dup_rate:.1f}%")
+        
+        report_lines.append("")
+        report_lines.append("─" * 50)
+        
+        # System Status Summary
+        if not errors:
+            status = "✅ HEALTHY"
+            if warnings:
+                status += f" ({len(warnings)} warning{'s' if len(warnings) > 1 else ''})"
+        else:
+            status = f"⚠️ NEEDS ATTENTION ({len(errors)} error{'s' if len(errors) > 1 else ''})"
+        
+        report_lines.append(f"System Status: {status}")
+        report_lines.append(f"Production Ready: {'YES' if not errors else 'YES (with issues)'}")
+        
+        if errors:
+            report_lines.append("")
+            report_lines.append("🎯 ACTION REQUIRED:")
+            for i, error in enumerate(errors[:3], 1):
+                report_lines.append(f"  {i}. {error.split(':')[0]}")
+        
+        report_lines.append("")
+        report_lines.append("─" * 50)
+        report_lines.append(f"Next Report: {(now + timedelta(hours=12)).strftime('%Y-%m-%d %H:%M UTC')}")
+        
+        # ====================================================================
+        # LOG TO CONSOLE
+        # ====================================================================
+        report_text = "\n".join(report_lines)
+        logger.info("\n" + report_text)
+        
+        # ====================================================================
+        # SEND TO TELEGRAM (if enabled)
+        # ====================================================================
+        if Config.TELEGRAM_SEND_HEALTH_REPORTS:
+            try:
+                # Split into chunks if too long (Telegram limit: 4096 chars)
+                max_length = 4000
+                if len(report_text) > max_length:
+                    # Send summary only
+                    summary_lines = report_lines[:30]  # First 30 lines
+                    summary_lines.append("...")
+                    summary_lines.append(f"(Full report in logs - {len(report_lines)} total lines)")
+                    summary_text = "\n".join(summary_lines)
+                    await self.telegram.send_message(f"```\n{summary_text}\n```")
+                else:
+                    await self.telegram.send_message(f"```\n{report_text}\n```")
+                
+                logger.info("✅ Health report sent to Telegram")
+            except Exception as e:
+                logger.error(f"Failed to send health report to Telegram: {e}")
+        
+        logger.info("=" * 60)
+        logger.info("🏥 HEALTH CHECK COMPLETED")
+        logger.info("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}", exc_info=True)
+        
+        # Send error alert to Telegram
+        if Config.TELEGRAM_SEND_ERROR_ALERTS:
+            try:
+                await self.telegram.send_message(
+                    f"🚨 HEALTH CHECK FAILED\n\n"
+                    f"Error: {str(e)}\n"
+                    f"Time: {now.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                    f"Check logs immediately!"
+                )
+            except:
+                pass

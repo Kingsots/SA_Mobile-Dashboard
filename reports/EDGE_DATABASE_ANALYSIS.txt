@@ -1,0 +1,37 @@
+========================================================================================================================
+RAW PROBABILITY EDGE ANALYSIS (DATABASE-STORED VALUES)
+Generated: 2026-02-17T14:07:23.165800+00:00
+Database: /home/ubuntu/opticore-bot/trading_bot.db
+Samples Analyzed: 1000
+========================================================================================================================
+
+SIGNAL DISTRIBUTION
+------------------------------------------------------------------------------------------------------------------------
+BUY:      477 ( 47.7%)
+SELL:       0 (  0.0%)
+NEUTRAL:  523 ( 52.3%)
+TOTAL:   1000
+
+CONFIDENCE STATISTICS
+------------------------------------------------------------------------------------------------------------------------
+BUY confidence:     mean=0.6405, min=0.5000, max=0.9500
+NEUTRAL confidence: mean=0.6382, min=0.5003, max=0.9500
+
+ROOT CAUSE DIAGNOSIS
+------------------------------------------------------------------------------------------------------------------------
+SCENARIO A: MODEL BIASED TO BUY (CONFIRMED)
+
+Finding: 0 SELL signals in 1000 database records
+Root Cause: model.predict(X) never outputs class 0 (SELL)
+Evidence:
+  1. Training data contained 48.6% bearish price movements
+  2. All 477 BUY signals have mean confidence 0.6405
+  3. All 523 NEUTRAL signals have mean confidence 0.6382
+  4. BUY and NEUTRAL have nearly identical confidence (non-directional)
+
+Conclusion: Model converged to binary prediction of class 1 only
+
+Next Steps:
+  1. Extract raw predict_proba() from model (if possible)
+  2. Check if probabilities are symmetric [0.5, 0.5] → indicates complete collapse
+  3. Retrain model with class_weight='balanced'

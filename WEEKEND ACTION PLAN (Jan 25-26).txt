@@ -1,0 +1,225 @@
+WEEKEND ACTION PLAN (Jan 25-26)
+Priority 1: Fix Entry Price Bug (CRITICAL) 🔥
+Deploy the fixed calculate_pattern_entry_price method I provided earlier.
+Quick deployment:
+bash# 1. Backup current file
+ssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 << 'BACKUP'
+sudo cp /home/ubuntu/opticore-bot/signals/xgb_signal_engine.py \
+       /home/ubuntu/opticore-bot/signals/xgb_signal_engine.py.backup_jan25_before_entry_fix
+echo "✅ Backup created"
+BACKUP
+
+# 2. Replace the buggy method
+# (Use the code from my previous artifact - the calculate_pattern_entry_price method)
+
+# 3. Verify changes
+ssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 \
+  "grep -A 15 'VOLUME/VOLATILITY EVENTS' /home/ubuntu/opticore-bot/signals/xgb_signal_engine.py"
+
+# 4. Restart service
+ssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 \
+  "sudo systemctl restart opticore.service && sleep 3 && sudo systemctl status opticore.service"
+
+Priority 2: Retrain Model with Clean Data 🔄
+After fixing entry prices, retrain the model immediately:
+bashssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 << 'RETRAIN'
+
+# Manually trigger EOD pipeline (training)
+cd /home/ubuntu/opticore-bot
+
+# Run training script
+sudo -u ubuntu python3 -c "
+import asyncio
+from async_scheduler import MLPipelineScheduler
+
+async def run_training():
+    scheduler = MLPipelineScheduler()
+    await scheduler.eod_pipeline_job()
+
+asyncio.run(run_training())
+"
+
+echo ""
+echo "=== CHECK NEW MODEL ==="
+ls -lh /home/ubuntu/opticore-bot/data/models/*.pkl | tail -3
+cat /home/ubuntu/opticore-bot/data/models/model_metadata.json | jq '.accuracy'
+
+RETRAIN
+Expected result: Accuracy should improve to 50-55% (better than Tuesday's 38.11%)
+
+Priority 3: Investigate Tuesday's Data 📊
+Find out what changed on Jan 21 that caused the crash:
+bashssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 << 'INVESTIGATE'
+
+echo "=== TRAINING DATA ANALYSIS - Jan 21 vs Jan 20 ==="
+echo ""
+
+python3 << 'EOF'
+import sqlite3
+import pandas as pd
+
+conn = sqlite3.connect('/home/ubuntu/opticore-bot/trading_bot.db')
+
+# Compare signal counts by day
+query = """
+SELECT 
+    DATE(timestamp) as day,
+    COUNT(*) as total_signals,
+    SUM(CASE WHEN signal = 1 THEN 1 ELSE 0 END) as buy_signals,
+    SUM(CASE WHEN signal = -1 THEN 1 ELSE 0 END) as sell_signals,
+    AVG(confidence) as avg_confidence
+FROM ml_signals
+WHERE DATE(timestamp) BETWEEN '2026-01-20' AND '2026-01-22'
+GROUP BY DATE(timestamp)
+ORDER BY day
+"""
+
+df = pd.read_sql(query, conn)
+print("Signal Distribution by Day:")
+print(df.to_string(index=False))
+print("")
+
+# Check for unusual patterns on Jan 21
+query2 = """
+SELECT 
+    interval,
+    COUNT(*) as count,
+    AVG(confidence) as avg_conf
+FROM ml_signals
+WHERE DATE(timestamp) = '2026-01-21'
+GROUP BY interval
+"""
+
+df2 = pd.read_sql(query2, conn)
+print("Jan 21 Signals by Interval:")
+print(df2.to_string(index=False))
+print("")
+
+# Check entry price distances
+query3 = """
+SELECT 
+    ticker,
+    COUNT(*) as count,
+    AVG(entry_price) as avg_entry
+FROM ml_signals
+WHERE DATE(timestamp) = '2026-01-21'
+GROUP BY ticker
+ORDER BY count DESC
+LIMIT 10
+"""
+
+df3 = pd.read_sql(query3, conn)
+print("Jan 21 Top Symbols:")
+print(df3.to_string(index=False))
+
+conn.close()
+EOF
+
+INVESTIGATE
+
+Priority 4: XAUUSD Investigation 🪙
+Gold data is consistently failing. Let's diagnose:
+bashssh -i "C:\Users\bigso\Downloads\opticore-key.pem" ubuntu@52.90.60.32 << 'XAUUSD_DEBUG'
+
+echo "=== XAUUSD DIAGNOSTIC ==="
+echo ""
+
+# Check Tiingo API directly
+echo "1. Testing Tiingo API for XAUUSD:"
+curl -s "https://api.tiingo.com/tiingo/forex/prices?tickers=xauusd&token=$(grep TIINGO_API_TOKEN /home/ubuntu/opticore-bot/.env | cut -d'=' -f2)" | jq '.'
+
+echo ""
+echo "2. Last 5 XAUUSD candles in database:"
+sqlite3 /home/ubuntu/opticore-bot/trading_bot.db << 'SQL'
+.mode column
+SELECT datetime(timestamp) as time, symbol, timeframe, close
+FROM ohlcv_data
+WHERE symbol = 'XAUUSD'
+ORDER BY timestamp DESC
+LIMIT 5;
+SQL
+
+echo ""
+echo "3. Recent fetch attempts for XAUUSD:"
+sudo journalctl -u opticore.service --since "24 hours ago" --no-pager | grep -i "xauusd" | tail -10
+
+XAUUSD_DEBUG
+```
+
+---
+
+## 📋 IMPLEMENTATION CHECKLIST
+
+### **Saturday Jan 25 (Today) - 2 Hours**
+
+- [ ] **Fix entry price bug** (30 min)
+  - Deploy fixed `calculate_pattern_entry_price` method
+  - Restart service
+  - Test with next signal (verify entry is within 5 pips of current price)
+
+- [ ] **Retrain model** (30 min)
+  - Trigger EOD pipeline manually
+  - Verify new model accuracy > 45%
+  - Check model metadata for correct timestamp
+
+- [ ] **Investigate Tuesday crash** (30 min)
+  - Run data analysis queries
+  - Document findings
+  - Identify if data corruption occurred
+
+- [ ] **XAUUSD diagnostic** (30 min)
+  - Test API directly
+  - Check database
+  - Determine if Tiingo endpoint is the issue
+
+---
+
+### **Sunday Jan 26 - 1 Hour**
+
+- [ ] **Verification testing**
+  - Watch first signals at market open (Sunday 22:00 UTC)
+  - Verify entry prices are reasonable
+  - Confirm model accuracy improved
+
+- [ ] **Week 2 planning**
+  - Set goals for Week 2 (Jan 27-31)
+  - Decide on code freeze extension or continue fixes
+  - Document lessons learned
+
+---
+
+## 🎯 MY RECOMMENDATION
+
+### **What to Fix This Weekend:**
+
+1. ✅ **Entry price bug** - MUST FIX (causes training corruption)
+2. ✅ **Retrain model** - MUST DO (with clean entry logic)
+3. ✅ **Investigate Tuesday** - HIGH PRIORITY (understand what happened)
+4. ⚠️ **XAUUSD** - MEDIUM (can exclude gold for now)
+
+### **What to Monitor Week 2:**
+
+1. Entry prices are within 5 pips of current price
+2. Model accuracy stabilizes > 50%
+3. Confidence levels return to 60-80% range
+4. No duplicate signals
+5. Training succeeds Monday-Friday
+
+---
+
+## 💡 KEY INSIGHT
+
+The **entry price bug is your smoking gun** for the model degradation. Here's the logic:
+```
+Week 1 Training Data:
+- Contains signals with entries 45+ pips away
+- Those signals never filled (marked as losses)
+- Model learns: "These patterns lose"
+- Accuracy crashes to 38%
+
+Week 2 Training Data (after fix):
+- Contains signals with realistic entries
+- Those signals actually fill (marked correctly)
+- Model learns: "These patterns work"
+- Accuracy recovers to 50-55%
+Fix the entry bug, retrain immediately, and you should see recovery.

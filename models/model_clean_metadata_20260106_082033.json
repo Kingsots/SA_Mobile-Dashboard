@@ -1,0 +1,99 @@
+{
+  "timestamp": "20260106_082033",
+  "model_type": "XGBoost (Clean, No Leakage)",
+  "accuracy": 0.5016181229773463,
+  "precision": 0.5135135135135135,
+  "recall": 0.4810126582278481,
+  "f1": 0.49673202614379086,
+  "walk_forward": {
+    "mean_accuracy": 0.5053030303030303,
+    "std_dev": 0.035347221658449106,
+    "folds": [
+      {
+        "fold": 1,
+        "train_size": 223,
+        "test_size": 220,
+        "accuracy": 0.5181818181818182,
+        "precision": 0.5301204819277109,
+        "recall": 0.3963963963963964,
+        "f1": 0.4536082474226804
+      },
+      {
+        "fold": 2,
+        "train_size": 443,
+        "test_size": 220,
+        "accuracy": 0.5590909090909091,
+        "precision": 0.5859375,
+        "recall": 0.6302521008403361,
+        "f1": 0.6072874493927125
+      },
+      {
+        "fold": 3,
+        "train_size": 663,
+        "test_size": 220,
+        "accuracy": 0.4681818181818182,
+        "precision": 0.6,
+        "recall": 0.09917355371900827,
+        "f1": 0.1702127659574468
+      },
+      {
+        "fold": 4,
+        "train_size": 883,
+        "test_size": 220,
+        "accuracy": 0.4636363636363636,
+        "precision": 0.46226415094339623,
+        "recall": 0.9607843137254902,
+        "f1": 0.6242038216560509
+      },
+      {
+        "fold": 5,
+        "train_size": 1103,
+        "test_size": 220,
+        "accuracy": 0.5363636363636364,
+        "precision": 0.5384615384615384,
+        "recall": 0.3888888888888889,
+        "f1": 0.45161290322580644
+      },
+      {
+        "fold": 6,
+        "train_size": 1323,
+        "test_size": 220,
+        "accuracy": 0.4863636363636364,
+        "precision": 0.5254237288135594,
+        "recall": 0.5210084033613446,
+        "f1": 0.5232067510548524
+      }
+    ]
+  },
+  "features": {
+    "count": 8,
+    "lagged_columns": [
+      "ema_21_lag1",
+      "ema_100_lag1",
+      "rsi_14_lag1",
+      "volume_sma_20_lag1",
+      "volume_ratio_lag1",
+      "obv_lag1",
+      "ad_lag1",
+      "vwap_slope_lag1"
+    ],
+    "base_columns": [
+      "ema_21",
+      "ema_100",
+      "rsi_14",
+      "volume_sma_20",
+      "volume_ratio",
+      "obv",
+      "ad",
+      "vwap_slope"
+    ]
+  },
+  "config": {
+    "n_estimators": 200,
+    "max_depth": 7,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8
+  },
+  "note": "This model uses only lagged indicators (no price features). Walk-forward accuracy should match test accuracy (52-58% expected)."
+}
