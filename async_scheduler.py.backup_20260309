@@ -3,31 +3,12 @@ Async Scheduler - APScheduler Integration for ML Pipeline
 Replaces schedule library with async job scheduling
 """
 
-# ============================================================================
-# SYSTEM RULE - CORE FILE PROTECTION
-# ============================================================================
-# This file is CRITICAL INFRASTRUCTURE and must NEVER be replaced.
-# Only patch/modify existing logic.
-#
-# Replacing this file causes:
-#   - Job scheduling to fail
-#   - Dependency checks to be bypassed
-#   - Silent trading engine paralysis
-#
-# Recovery: Always use git to restore or patch existing logic
-# ============================================================================
-
 import asyncio
 import subprocess
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 import logging
-import traceback
-import fcntl
-import sys
-import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -44,6 +25,8 @@ from signals.event_monitor import EventMonitor, EventMonitorConfig
 from signals.xgb_signal_engine_ec2 import PureStrategyEngine
 from signals.v2_execution_engine import V2ExecutionEngine
 from signals.trade_signal import TradeSignal
+from signals.trade_constructor import build_trade_signal
+from signals.trade_validator import validate_trade_signal, is_trade_expired
 from alerts.telegram_bot import TelegramBot
 import pandas as pd
 
@@ -83,52 +66,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def verify_database_dependencies(db):
-    """
-    CRITICAL DEPENDENCY CHECK - Prevent silent trading engine paralysis
-    
-    Verifies that core database methods exist. If any are missing,
-    system halts immediately instead of silently failing.
-    
-    This prevents the scenario where the database layer gets accidentally
-    stripped of critical methods (like load_strategy_state), leaving
-    the system running but unable to process signals.
-    
-    Args:
-        db: DatabaseManager instance
-        
-    Raises:
-        RuntimeError: If ANY required method is missing
-    """
-    required_methods = [
-        "load_strategy_state",
-        "save_strategy_state",
-        "bootstrap_strategy_state",
-        "is_event_processed",
-        "mark_event_processed",
-        "log_api_usage",
-        "log_job_execution",
-        "api_call_exists",  # API dedup safety
-    ]
-    
-    missing = []
-    for method_name in required_methods:
-        if not hasattr(db, method_name) or not callable(getattr(db, method_name)):
-            missing.append(method_name)
-    
-    if missing:
-        error_msg = (
-            f"\n🔴 CRITICAL SYSTEM FAILURE: Database layer incomplete\n"
-            f"Missing methods: {', '.join(missing)}\n"
-            f"This prevents signal generation and trading.\n"
-            f"DO NOT CONTINUE - Restore core/database.py immediately.\n"
-        )
-        logger.critical(error_msg)
-        raise RuntimeError(error_msg)
-    
-    logger.info(f"✅ Database dependency check passed - all {len(required_methods)} critical methods present")
-
-
 class MLPipelineScheduler:
     """
     Async scheduler for ML pipeline operations
@@ -146,26 +83,11 @@ class MLPipelineScheduler:
         Args:
             enable_telegram: Whether to send Telegram alerts
         """
-        # ══════════════════════════════════════════════════════════════════════
-        # SINGLE-INSTANCE LOCK — Prevent concurrent scheduler processes
-        # ══════════════════════════════════════════════════════════════════════
-        self._lock_file = open("/tmp/async_scheduler.lock", "w")
-        try:
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self._lock_file.write(str(os.getpid()))
-            self._lock_file.flush()
-            logger.info(f"✅ Single-instance lock acquired | PID={os.getpid()}")
-        except BlockingIOError:
-            logger.critical(
-                "❌ STARTUP BLOCKED: Another async_scheduler instance is already running. "
-                "Exiting to prevent duplicate signal generation."
-            )
-            sys.exit(1)
-
         # GUARDRAIL 3: DB PATH ASSERTION - Verify absolute path at startup
         logger.info("="*70)
         logger.info("🔐 DATABASE PATH VERIFICATION")
         logger.info(f"   Config DB_PATH: {Config.DB_PATH}")
+        import os
         if os.path.exists(Config.DB_PATH):
             db_size_mb = os.path.getsize(Config.DB_PATH) / (1024 * 1024)
             logger.info(f"   ✅ Database exists at absolute path: {Config.DB_PATH}")
@@ -176,10 +98,6 @@ class MLPipelineScheduler:
         
         self.scheduler = AsyncIOScheduler()
         self.db = DatabaseManager()
-        
-        # CRITICAL: Verify database layer is complete before proceeding
-        verify_database_dependencies(self.db)
-        
         self.feature_engine = FeatureEngine()
         self.signal_engine = PureStrategyEngine()
         self.v2_execution_engine = V2ExecutionEngine()
@@ -223,13 +141,6 @@ class MLPipelineScheduler:
         self._last_market_state: bool | None = None  # None=unknown, True=open, False=closed
         
         logger.info("✅ Market state tracker initialized")
-        
-        # ============================================================================
-        # Data starvation monitoring (alert if no new OHLCV data for 45+ minutes)
-        self._last_starvation_alert: Optional[datetime] = None  # Track when alert was last sent
-        self._starvation_alert_cooldown = timedelta(hours=1)  # Don't spam - max 1 alert per hour
-        
-        logger.info("✅ Data starvation monitor initialized")
         
         # Hybrid mode: Event-driven PRIMARY with time-based FALLBACK
         # Tracks last signal generation per symbol to decide between event/time-based modes
@@ -501,81 +412,6 @@ class MLPipelineScheduler:
             
             self._last_market_state = current_state
 
-    async def _check_data_starvation(self):
-        """
-        Monitor if OHLCV data ingestion is stalled.
-        
-        Alert if no new rows have been added to ohlcv_raw table in the last 45 minutes.
-        This prevents the system from running silently on stale data all day.
-        
-        Implements cooldown to avoid spam (max 1 alert per hour).
-        """
-        try:
-            now = datetime.now(timezone.utc)
-            
-            # Check if we're on cooldown from last alert
-            if self._last_starvation_alert is not None:
-                time_since_alert = now - self._last_starvation_alert
-                if time_since_alert < self._starvation_alert_cooldown:
-                    # Still in cooldown, skip check
-                    return
-            
-            # Query the most recent OHLCV row
-            try:
-                import sqlite3
-                conn = sqlite3.connect(Config.DB_PATH)
-                cursor = conn.cursor()
-                cursor.execute("SELECT MAX(timestamp) FROM ohlcv_data")
-                result = cursor.fetchone()
-                conn.close()
-                
-                if not result or not result[0]:
-                    # No data in table yet
-                    logger.debug("⚙️  Data starvation check: No data in ohlcv_data table yet")
-                    return
-                
-                last_data_ts = pd.Timestamp(result[0])
-                age_minutes = (now - last_data_ts).total_seconds() / 60
-                
-                # Alert threshold: 45 minutes
-                if age_minutes > 45:
-                    # Data is stale - send alert
-                    alert_msg = (
-                        f"⚠️ <b>Silent Analyst Health Alert</b>\n\n"
-                        f"<b>Issue:</b> No market data received\n"
-                        f"<b>Duration:</b> {age_minutes:.0f} minutes\n"
-                        f"<b>Last Data:</b> {last_data_ts.strftime('%Y-%m-%d %H:%M UTC')}\n"
-                        f"<b>Current Time:</b> {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
-                        f"<b>Action:</b> Check data ingestion pipeline\n\n"
-                        f"<i>This alert fires every 1 hour max to avoid spam</i>"
-                    )
-                    
-                    logger.warning(
-                        f"🚨 DATA STARVATION ALERT: No new OHLCV data for {age_minutes:.0f}m "
-                        f"(last: {last_data_ts.isoformat()})"
-                    )
-                    
-                    # Send Telegram alert
-                    if self.enable_telegram:
-                        try:
-                            await _run_blocking(self.telegram_bot.send_message, alert_msg)
-                            self._last_starvation_alert = now
-                            logger.info("✅ Data starvation alert sent to Telegram")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to send starvation alert: {e}")
-                    else:
-                        # Even if Telegram disabled, mark that alert was "sent" to skip spamming logs
-                        self._last_starvation_alert = now
-                else:
-                    # Data is fresh - log for reference
-                    logger.debug(f"✅ Data freshness check: Latest OHLCV from {age_minutes:.0f}m ago")
-            
-            except Exception as e:
-                logger.warning(f"⚠️  Error checking data starvation: {e}")
-        
-        except Exception as e:
-            logger.error(f"❌ Unexpected error in data starvation check: {e}")
-
     def _should_run_time_based_fallback(self, symbol: str, now: datetime) -> bool:
         """
         Hybrid mode logic: Decide if time-based signal generation should run.
@@ -770,39 +606,47 @@ class MLPipelineScheduler:
             except Exception as e:
                 logger.warning(f"⚠️  Could not update heartbeat file: {e}")
             
-            # ═══════════════════════════════════════════════════════════════════════════
-            # SIGNALS NOW ROUTE THROUGH TRADE PIPELINE (NOT DIRECT TELEGRAM)
-            # ═══════════════════════════════════════════════════════════════════════════
-            # All Telegram broadcasts now handled by execute_trade_pipeline() + dedup check
-            # This ensures ONE broadcast point with proper deduplication
-            logger.info(f"[SIGNAL_ROUTING] Routing {len(actionable)} signals through trade pipeline for dedup processing")
-            
-            for signal in actionable:
-                try:
-                    # Route through execute_trade_pipeline for:
-                    # 1. Trade construction (entry/SL/TP)
-                    # 2. Deduplication check (prevents spam)
-                    # 3. Database persistence
-                    # 4. Telegram broadcast (only if not duplicate)
-                    signal_data = self.signal_engine.execute_trade_pipeline(
-                        ticker=signal['ticker'],
-                        interval=interval,
-                        strategy_name='ml_v1_scheduler',
-                        direction=int(signal['signal']),
-                        df_ohlcv=None,  # Not needed for broadcast-only path
-                        confidence=signal.get('confidence', 0.95),
-                        source='ml_scheduler',
-                        metadata={'scheduler_job': 'generate_signals'}
+            # Send Telegram alerts for actionable signals
+            if (
+                self.telegram_bot
+                and Config.TELEGRAM_SEND_SIGNAL_ALERTS
+                and len(actionable) > 0
+            ):
+                for signal in actionable:
+                    emoji = "🟢" if signal['signal'] == 1 else "🔴"
+                    
+                    # Build comprehensive trade message (HTML format)
+                    message = (
+                        f"{emoji} <b>ML Signal Alert</b>\n\n"
+                        f"<b>Symbol:</b> {signal['ticker']}\n"
+                        f"<b>Signal:</b> {signal['signal_label']}\n"
+                        f"<b>Confidence:</b> {signal['confidence']:.1%}\n"
+                        f"<b>Interval:</b> {interval}\n"
+                        f"<b>Model:</b> {signal['model_version']}\n"
+                        f"<b>Time:</b> {signal['timestamp']}\n\n"
+                        f"<b>📊 Trade Levels:</b>\n"
                     )
                     
-                    if signal_data:
-                        logger.info(f"[SIGNAL_ROUTING] Signal passed through pipeline: {signal['ticker']}-{interval}")
+                    # Add trade levels if available
+                    if signal.get('entry_price') is not None:
+                        message += f"<b>Entry:</b> <code>{signal['entry_price']}</code>\n"
+                        message += f"<b>Stop Loss:</b> <code>{signal['stop_loss']}</code>\n"
+                        message += f"<b>Take Profit:</b> <code>{signal['take_profit']}</code>\n"
                     else:
-                        logger.debug(f"[SIGNAL_ROUTING] Signal blocked or returned None: {signal['ticker']}-{interval}")
-                
-                except Exception as e:
-                    logger.error(f"[SIGNAL_ROUTING] Error routing signal through pipeline: {signal['ticker']}-{interval}: {e}")
-                    continue
+                        message += "<b>Entry/SL/TP:</b> <i>Waiting for V2 execution layer...</i>\n"
+                    
+                    try:
+                        await _run_blocking(self.telegram_bot.send_message, message)
+                        
+                        # Track broadcast to Telegram (only after successful send)
+                        try:
+                            signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                            self.pipeline_tracker.mark_broadcast(signal_id)
+                        except Exception:
+                            pass  # Never let tracker crash signal flow
+                    except Exception as e:
+                        logger.error(f"Failed to broadcast signal {signal['ticker']}: {e}")
+                        continue  # Continue with next signal
         
         except Exception as e:
             logger.error(f"❌ Signal generation failed: {e}")
@@ -1083,57 +927,68 @@ class MLPipelineScheduler:
                     # If signal was generated, persist it
                     if signal != 0:  # signal is Signal(-1/0/1) from enum
                         v2_signals_found += 1
-                        signal_id = f"{symbol}|{check_interval}|{now.isoformat()}"
-                        logger.info(f"[V2_PERSISTENCE] Processing signal: {symbol} {check_interval} {signal.name}")
                         
-                        # === UNIFIED TRADE EXECUTION PIPELINE ===
-                        # Use the unified pipeline from signal_engine for consistent processing
-                        logger.info(f"[TRADE_PIPELINE] Processing signal {signal_id}")
-                        signal_data = self.signal_engine.execute_trade_pipeline(
+                        # === TRADE CONSTRUCTION PIPELINE ===
+                        trade_signal = build_trade_signal(
                             ticker=symbol,
                             interval=check_interval,
-                            strategy_name='strategy_core_v2',
                             direction=int(signal),
-                            df_ohlcv=df,
-                            confidence=1.0,
-                            source='v2_persistence',
-                            metadata={
-                                'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
-                                'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
-                            }
+                            df_ohlcv=df
                         )
                         
-                        if signal_data is None:
-                            # Already logged in execute_trade_pipeline (rejection or expiry)
+                        if trade_signal is None:
+                            logger.warning(f"Trade construction failed for {symbol}-{check_interval}")
                             continue
                         
-                        # === TELEGRAM BROADCAST HANDLED IN PIPELINE (LINE 435) ===
-                        # Removed duplicate broadcast call - pipeline already broadcasts
+                        if not validate_trade_signal(trade_signal):
+                            logger.info(f"Trade signal rejected: {trade_signal.rejection_reason}")
+                            continue
                         
-                        # === SAVE SIGNAL TO DATABASE ===
-                        self.db.save_ml_signal(
-                            ticker=signal_data['ticker'],
-                            timestamp=signal_data['timestamp'],
-                            interval=signal_data['interval'],
-                            signal=signal_data['signal'],
-                            confidence=signal_data['confidence'],
-                            feature_snapshot=json.dumps(signal_data.get('features', {})),
-                            model_version='strategy_core_v2',
-                            triggered_by='v2_persistence',
-                            trade_id=signal_data.get('trade_id'),
-                            entry_price=signal_data.get('entry_price'),
-                            stop_loss=signal_data.get('stop_loss'),
-                            take_profit=signal_data.get('take_profit'),
-                            risk_reward=signal_data.get('risk_reward'),
-                            entry_type=signal_data.get('entry_type'),
-                            signal_candle_time=signal_data.get('signal_candle_time'),
-                            expiry_timestamp=signal_data.get('expiry_timestamp'),
-                            expiry_candles=signal_data.get('expiry_candles'),
+                        if is_trade_expired(trade_signal):
+                            logger.info(f"Trade expired: {trade_signal.trade_id}")
+                            continue
+                        
+                        # === TRADE CONSTRUCTION LOG ===
+                        logger.info(
+                            f"TRADE_CONSTRUCTED | "
+                            f"{trade_signal.trade_id} | "
+                            f"{symbol}-{check_interval} | "
+                            f"entry={trade_signal.entry_price:.4f} | "
+                            f"stop={trade_signal.stop_loss:.4f} | "
+                            f"tp={trade_signal.take_profit:.4f} | "
+                            f"rr={trade_signal.risk_reward:.2f}"
                         )
+                        
+                        # === BUILD RICH SIGNAL DATA ===
+                        import json
+                        signal_data = {
+                            'timestamp': now.isoformat(),
+                            'ticker': symbol,
+                            'interval': check_interval,
+                            'signal': int(signal),
+                            'confidence': 1.0,
+                            'feature_snapshot': json.dumps({}),  # No features for pure strategy
+                            'model_version': 'strategy_core_v2',
+                            'triggered_by': 'v2_persistence',  # Distinguish from event-based
+                            'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
+                            'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
+                            
+                            # === NEW TRADE CONSTRUCTION FIELDS ===
+                            'trade_id': trade_signal.trade_id,
+                            'entry_price': trade_signal.entry_price,
+                            'stop_loss': trade_signal.stop_loss,
+                            'take_profit': trade_signal.take_profit,
+                            'risk_reward': trade_signal.risk_reward,
+                            'entry_type': trade_signal.entry_type,
+                            'signal_candle_time': trade_signal.signal_candle_time,
+                            'expiry_timestamp': trade_signal.expiry_timestamp,
+                            'expiry_candles': trade_signal.expiry_candles,
+                        }
+                        self.db.save_ml_signal(**signal_data)
                         logger.info(f"[V2_PERSISTENCE] Signal from persistent state: {symbol} {check_interval} {signal.name}")
                         
                         # Track V2 persistence signal in pipeline
-                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_persistence"
+                        v2_signal_id = f"{symbol}|{check_interval}|{now.isoformat()}|v2_persistence"
                         self.pipeline_tracker.update_stage(
                             signal_id=v2_signal_id,
                             stage_name='stage3',  # Entry fired
@@ -1143,14 +998,31 @@ class MLPipelineScheduler:
                         # Mark as persisted since we just saved it
                         self.pipeline_tracker.mark_persisted(signal_id=v2_signal_id)
                         
-                        # Log signal processing complete (Telegram only via broadcast_trade_signal in pipeline)
-                        logger.info(f"[V2_PERSISTENCE] Signal processed: {symbol} {check_interval}")
+                        # Send alert if configured
+                        if self.telegram_bot and Config.TELEGRAM_SEND_EVENT_ALERTS:
+                            emoji = "🟢" if signal == 1 else "🔴"
+                            message = (
+                                f"{emoji} <b>V2 Persistent Signal</b>\n\n"
+                                f"<b>Symbol:</b> {symbol}\n"
+                                f"<b>Signal:</b> {'BUY' if signal == 1 else 'SELL'}\n"
+                                f"<b>Interval:</b> {check_interval}\n"
+                                f"<b>Trigger:</b> V2 State Persistence\n"
+                                f"<b>Stage:</b> {v2_engine.stage}\n"
+                                f"<b>Time:</b> {now.isoformat()}\n"
+                            )
+                            try:
+                                await _run_blocking(self.telegram_bot.send_message, message)
+                                
+                                # Track broadcast (only after successful send)
+                                try:
+                                    self.pipeline_tracker.mark_broadcast(signal_id=v2_signal_id)
+                                except Exception:
+                                    pass  # Never let tracker crash signal flow
+                            except Exception as e:
+                                logger.error(f"Failed to broadcast V2 persistent signal {symbol}: {e}")
                         
                 except Exception as e:
-                    logger.error(
-                        f"[V2_PERSISTENCE] Error advancing state for signal {signal_id}: {e}"
-                    )
-                    logger.error(f"TRACEBACK:\n{traceback.format_exc()}")
+                    logger.debug(f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}")
                     continue
         
         if v2_signals_found > 0:
@@ -1167,49 +1039,44 @@ class MLPipelineScheduler:
                     f"   • {symbol}: {summary['event_type']} (conf={summary['confidence']}, time={summary['event_time']})"
                 )
 
-        # ═════════════════════════════════════════════════════════════════════
-        # NOTE: Event signals are now broadcast through execute_trade_pipeline()
-        # which applies dedup protection. Direct Telegram sends disabled.
-        # ═════════════════════════════════════════════════════════════════════
-        # DISABLED: Direct event signal broadcasts were causing duplicates
-        # if (
-        #     actionable_signals
-        #     and self.telegram_bot
-        #     and Config.TELEGRAM_SEND_EVENT_ALERTS
-        # ):
-        #     for signal in actionable_signals:
-        #         emoji = "🟢" if signal['signal'] == 1 else "🔴"
-        #         message = (
-        #             f"{emoji} <b>Event Signal Alert</b>\n\n"
-        #             f"<b>Symbol:</b> {signal['ticker']}\n"
-        #             f"<b>Signal:</b> {signal['signal_label']}\n"
-        #             f"<b>Confidence:</b> {signal['confidence']:.1%}\n"
-        #             f"<b>Interval:</b> {interval}\n"
-        #             f"<b>Model:</b> {signal['model_version']}\n"
-        #             f"<b>Trigger:</b> event_monitor\n"
-        #             f"<b>Time:</b> {signal['timestamp']}\n\n"
-        #             f"<b>📊 Trade Levels:</b>\n"
-        #         )
-        #
-        #         if signal.get('entry_price') is not None:
-        #             message += f"<b>Entry:</b> <code>{signal['entry_price']}</code>\n"
-        #             message += f"<b>Stop Loss:</b> <code>{signal['stop_loss']}</code>\n"
-        #             message += f"<b>Take Profit:</b> <code>{signal['take_profit']}</code>\n"
-        #         else:
-        #             message += "<b>Entry/SL/TP:</b> <i>Calculating...</i>\n"
-        #
-        #         try:
-        #             await _run_blocking(self.telegram_bot.send_message, message)
-        #             
-        #             # Track broadcast of event-monitor signal (only after successful send)
-        #             try:
-        #                 event_signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
-        #                 self.pipeline_tracker.mark_broadcast(signal_id=event_signal_id)
-        #             except Exception:
-        #                 pass  # Never let tracker crash signal flow
-        #         except Exception as e:
-        #             logger.error(f"Failed to broadcast event signal {signal['ticker']}: {e}")
-        #             continue  # Continue with next signal
+        if (
+            actionable_signals
+            and self.telegram_bot
+            and Config.TELEGRAM_SEND_EVENT_ALERTS
+        ):
+            for signal in actionable_signals:
+                emoji = "🟢" if signal['signal'] == 1 else "🔴"
+                message = (
+                    f"{emoji} <b>Event Signal Alert</b>\n\n"
+                    f"<b>Symbol:</b> {signal['ticker']}\n"
+                    f"<b>Signal:</b> {signal['signal_label']}\n"
+                    f"<b>Confidence:</b> {signal['confidence']:.1%}\n"
+                    f"<b>Interval:</b> {interval}\n"
+                    f"<b>Model:</b> {signal['model_version']}\n"
+                    f"<b>Trigger:</b> event_monitor\n"
+                    f"<b>Time:</b> {signal['timestamp']}\n\n"
+                    f"<b>📊 Trade Levels:</b>\n"
+                )
+
+                if signal.get('entry_price') is not None:
+                    message += f"<b>Entry:</b> <code>{signal['entry_price']}</code>\n"
+                    message += f"<b>Stop Loss:</b> <code>{signal['stop_loss']}</code>\n"
+                    message += f"<b>Take Profit:</b> <code>{signal['take_profit']}</code>\n"
+                else:
+                    message += "<b>Entry/SL/TP:</b> <i>Calculating...</i>\n"
+
+                try:
+                    await _run_blocking(self.telegram_bot.send_message, message)
+                    
+                    # Track broadcast of event-monitor signal (only after successful send)
+                    try:
+                        event_signal_id = f"{signal['ticker']}|{interval}|{signal['timestamp']}|v1"
+                        self.pipeline_tracker.mark_broadcast(signal_id=event_signal_id)
+                    except Exception:
+                        pass  # Never let tracker crash signal flow
+                except Exception as e:
+                    logger.error(f"Failed to broadcast event signal {signal['ticker']}: {e}")
+                    continue  # Continue with next signal
 
     
     async def time_based_fallback_job(self, interval: str = '1h'):
@@ -1494,7 +1361,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
         System health check - runs 4× daily (every 6 hours).
         
         Generates and sends professional health report to Telegram.
-        Also expires old trades automatically to prevent system lockup.
         """
         from datetime import datetime, timezone
         
@@ -1504,15 +1370,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
         logger.info("=" * 60)
         
         try:
-            # === AUTOMATIC TRADE EXPIRATION (prevent system lockup) ===
-            expired_count = self.db.expire_old_trades(
-                hours_30m=24,  # Close 30m trades after 24 hours
-                hours_1h=48,   # Close 1h trades after 48 hours
-                hours_4h=72,   # Close 4h trades after 72 hours
-            )
-            if expired_count > 0:
-                logger.info(f"[TRADE_LIFECYCLE] Expired {expired_count} old trade(s) in this health check")
-            
             # Generate professional health report
             report = self.generate_health_report()
             
@@ -1629,10 +1486,10 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             )
             logger.info(f"   ✅ Job registered: event_monitor_30m (every 15 min, race-safe: :05, :20, :35, :50 UTC)")
             
-            # 1h event monitor - every 30 minutes at :15 and :45 UTC (race-safe offset after 30m)
+            # 1h event monitor - every hour at :15 UTC (race-safe offset after 30m)
             self.scheduler.add_job(
                 self.event_monitor_job,
-                trigger=CronTrigger(minute='15,45', timezone='UTC'),
+                trigger=CronTrigger(minute=15, timezone='UTC'),
                 args=['1h'],
                 id='event_monitor_1h',
                 name='Event Monitor Sweep (1h)',
@@ -1640,7 +1497,7 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
                 coalesce=True,
                 misfire_grace_time=120,
             )
-            logger.info(f"   ✅ Job registered: event_monitor_1h (every 30 min at :15, :45 UTC - reduced from hourly)")
+            logger.info(f"   ✅ Job registered: event_monitor_1h (every hour at :15 UTC, race-safe offset)")
             
             # 4h event monitor - every hour, 5 minutes AFTER fetch completes (:05 UTC)
             self.scheduler.add_job(
@@ -1688,18 +1545,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             replace_existing=True
         )
         logger.info(f"   ✅ Job registered: event_dedup_cleanup (every 6h)")
-        
-        # Job 8: Data starvation monitor DISABLED
-        # self.scheduler.add_job(
-        #     self._check_data_starvation,
-        #     trigger=IntervalTrigger(minutes=5),
-        #     id='data_starvation_check',
-        #     name='Data Starvation Monitor',
-        #     max_instances=1,
-        #     coalesce=True
-        # )
-        # logger.info(f"   ✅ Job registered: data_starvation_check (every 5 min, alerts if 45+ min without data)")
-        logger.info(f"   ⏸️  Job DISABLED: data_starvation_check (not needed - user monitoring manually)")
         
         total_jobs = len(self.scheduler.get_jobs())
         logger.info(f"✅ All jobs registered ({total_jobs} total)")
@@ -1754,7 +1599,7 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
 
 async def main():
     """Run scheduler"""
-    scheduler = MLPipelineScheduler(enable_telegram=True)
+    scheduler = MLPipelineScheduler(enable_telegram=Config.TELEGRAM_NOTIFICATIONS_ENABLED)
     
     try:
         scheduler.start()

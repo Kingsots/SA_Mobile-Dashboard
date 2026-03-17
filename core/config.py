@@ -41,23 +41,22 @@ class Config:
     # Engulfing Pattern
     STRICT_ENGULFING = True   # Require strict engulfing candles
     
+    # Engulfing Pattern Parameters (for EventMonitor)
+    ENGULFED_RANGE_LOOKBACK = 20           # Bars to look back for range
+    ENGULFED_MIN_BREAK_PIPS = 5            # Minimum pip breakout required
+    ENGULFED_MIN_VOLUME_MULT = 1.5         # Volume multiplier threshold
+    ENGULFED_USE_DAILY_FILTER = False      # Use daily filter for engulfing
+    
     # ==========================================
     # TIMEFRAME SETTINGS
     # ==========================================
     
-    # Entry timeframes to monitor (30m, 1h, and 4h)
-    ENTRY_TIMEFRAMES = ['30m', '1h', '4h']  # Swing trader: 30m entry + 1h bridge + 4h confirmation
+    # Entry timeframes to monitor (30m and 1h)
+    ENTRY_TIMEFRAMES = ['30m', '1h']
     
     # Multi-timeframe cascade for alignment checking
     # Daily → 4H → 2H → 1H → 30m (all must align)
     CASCADE_TIMEFRAMES = ['1d', '4h', '2h', '1h', '30m']
-    
-    # Interval scan schedule (minutes between sweeps)
-    INTERVAL_SCAN_INTERVALS = {
-        '30m': 30,   # 30m data updated every 30 minutes
-        '1h': 60,    # 1h data updated every 60 minutes
-        '4h': 240    # 4h data updated every 4 hours
-    }
     
     # Higher timeframe for trend filter (Daily)
     HTF_TIMEFRAME = '1d'
@@ -71,20 +70,17 @@ class Config:
         "NAS100": {
             "name": "NASDAQ 100",
             "type": "index",
-            "yahoo_symbol": "^NDX",
-            "enabled": False  # Tiingo intraday coverage unavailable; skip for now
+            "yahoo_symbol": "^NDX"
         },
         "US30": {
             "name": "Dow Jones Industrial Average",
             "type": "index",
-            "yahoo_symbol": "^DJI",
-            "enabled": False
+            "yahoo_symbol": "^DJI"
         },
         "US500": {
             "name": "S&P 500",
             "type": "index",
-            "yahoo_symbol": "^GSPC",
-            "enabled": False
+            "yahoo_symbol": "^GSPC"
         },
         
         # Commodities
@@ -158,11 +154,7 @@ class Config:
     # DATABASE SETTINGS
     # ==========================================
     
-    # Use absolute path to ensure correct database is accessed regardless of working directory
-    DB_PATH = str(Path("/home/ubuntu/SilentAnalyst/trading_bot.db").expanduser())
-    
-    # Log directory for event debug logs and strategy signals
-    LOG_DIR = "/home/ubuntu/SilentAnalyst/logs"
+    DB_PATH = "trading_bot.db"
     
     # ==========================================
     # TELEGRAM SETTINGS
@@ -170,14 +162,7 @@ class Config:
     
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-    TELEGRAM_NOTIFICATIONS_ENABLED = True
-
-    # Fine-grained Telegram toggles
-    TELEGRAM_SEND_FETCH_REPORTS = False
-    TELEGRAM_SEND_SIGNAL_ALERTS = True  # Send time-based fallback + event-driven alerts
-    TELEGRAM_SEND_EVENT_ALERTS = True  # Send ONLY event-driven signal alerts
-    TELEGRAM_SEND_EOD_REPORTS = False
-    TELEGRAM_SEND_HEALTH_REPORTS = True
+    
     # ==========================================
     # ALERT SETTINGS
     # ==========================================
@@ -188,60 +173,6 @@ class Config:
     
     # Minimum time between continuation alerts (seconds)
     CONTINUATION_ALERT_INTERVAL = 3600  # 1 hour
-    
-    # ==========================================
-    # EVENT DETECTION THRESHOLDS (Forex optimized)
-    # ==========================================
-    
-    # Breakout detection: Minimum % price movement to trigger event
-    # Reduced from 0.15% to 0.05% for 1h forex candles
-    EVENT_MIN_BREAKOUT_RATIO = 0.0005  # 0.05%
-    
-    # Minimum confidence for events to be considered valid
-    EVENT_MIN_CONFIDENCE = 0.50  # 50% (relaxed from 0.55%)
-    
-    # Event cooldown: How long to suppress same event type on same symbol
-    EVENT_COOLDOWN_SECONDS = 3600  # 1 hour per event type
-    
-    # ==========================================
-    # MARKET HOURS CONFIGURATION
-    # ==========================================
-    # Forex market operates Sunday 22:00 UTC to Friday 22:00 UTC
-    MARKET_OPEN_DAY = 6          # Sunday (0=Monday, 6=Sunday)
-    MARKET_OPEN_HOUR = 22        # 22:00 UTC
-    MARKET_CLOSE_DAY = 4         # Friday
-    MARKET_CLOSE_HOUR = 22       # 22:00 UTC
-    
-    # ==========================================
-    # DATA FRESHNESS CONFIGURATION
-    # ==========================================
-    # Maximum age for OHLCV data before skipping analysis (in minutes)
-    # If latest candle is older than this, we skip event detection
-    # 4 hours = 240 minutes (allows for one missed 4h candle)
-    OHLCV_MAX_AGE_MINUTES = 240
-    
-    # Per-interval thresholds (optional - use OHLCV_MAX_AGE_MINUTES if not specified)
-    OHLCV_MAX_AGE_BY_INTERVAL = {
-        '30m': 60,   # 1 hour max age for 30m candles
-        '1h': 90,    # 1.5 hours max age for 1h candles
-        '4h': 300,   # 5 hours max age for 4h candles (allows 1 missed candle)
-    }
-    
-    # ==========================================
-    # ENGULFED STRUCTURE DETECTION (NEW)
-    # ==========================================
-    
-    # Range identification lookback
-    ENGULFED_RANGE_LOOKBACK = 20  # Candles to scan for range
-    
-    # Minimum pips for full body break
-    ENGULFED_MIN_BREAK_PIPS = 2.0  # 2 pips minimum
-    
-    # Volume confirmation requirement
-    ENGULFED_MIN_VOLUME_MULT = 1.2  # 1.2x average volume
-    
-    # Multi-timeframe filter (optional)
-    ENGULFED_USE_DAILY_FILTER = False  # Set to True to require daily trend alignment
     
     # ==========================================
     # BACKTEST SETTINGS
@@ -310,7 +241,7 @@ class Config:
     
     # Request Settings
     TIINGO_REQUEST_DELAY = 2.0    # Seconds between requests
-    TIINGO_TIMEOUT = 20           # Request timeout in seconds (increased for API latency)
+    TIINGO_TIMEOUT = 10           # Request timeout in seconds
     TIINGO_MAX_RETRIES = 3        # Retry failed requests
     
     # ==========================================
@@ -331,23 +262,21 @@ class Config:
     # Model Training
     ML_TRAIN_LOOKBACK_DAYS = 90
     ML_TEST_SPLIT = 0.2           # 80/20 train/test split
-    ML_TARGET_ACCURACY = 0.45     # Minimum accuracy for deployment (forex volatility ~50%)
+    ML_TARGET_ACCURACY = 0.65     # Minimum accuracy for deployment
     
     # Model Versioning
     MODEL_DIR = Path(__file__).parent.parent / "data" / "models"
     MODEL_CURRENT_PATH = MODEL_DIR / "model_current.pkl"
+    MODEL_SHADOW_PATH = MODEL_DIR / "model_shadow.pkl"
     MODEL_METADATA_PATH = MODEL_DIR / "model_metadata.json"
     
     # Signal Generation
-    ML_SIGNAL_CONFIDENCE_MIN = 0.33   # Minimum confidence to generate signal (lowered to 33% for observation phase)
+    ML_SIGNAL_CONFIDENCE_MIN = 0.60   # Minimum confidence to generate signal
     ML_SIGNAL_LABELS = {
         1: "BUY",
         -1: "SELL",
         0: "NEUTRAL"
     }
-    FEATURE_REFRESH_LOOKBACK_DAYS = 90   # Days of raw data to use during refresh
-    FEATURE_STALENESS_MINUTES = 90       # Trigger regeneration if features are older than this
-    FEATURE_STALENESS_ALERT_MINUTES = 120  # Highlight in telemetry when features exceed this age
     
     # ==========================================
     # PIPELINE SETTINGS
@@ -356,12 +285,38 @@ class Config:
     # Feature Toggle (backward compatibility)
     USE_TIINGO_PIPELINE = True   # Set to True to enable Tiingo + ML pipeline
     
+    # ==========================================
+    # DUAL STRATEGY SETTINGS (V1 + V2 Concurrent)
+    # ==========================================
+    
+    # Strategy Evaluation Mode
+    # Options: 'concurrent' = both V1 and V2 always run, OR
+    #          'v1_first' = V1 runs first, V2 only if V1 silent (less spam)
+    STRATEGY_EVAL_MODE = 'concurrent'  # Change to 'v1_first' to reduce duplicates
+    
+    # Duplicate Trade Prevention
+    # Prevents same signal from V1 and V2 being broadcast twice
+    # Tracks by database: if active trade with same symbol/interval/direction/entry_price exists, blocks duplicate
+    ENABLE_DUPLICATE_PREVENTION = True    # Master toggle for deduplication
+    
     # Data Source Priority
     DATA_SOURCE_PRIORITY = ['tiingo', 'csv', 'yahoo']  # Try in this order
     
     # Data Retention
     DATA_RETENTION_DAYS = 90      # Keep 90 days of data
     CLEANUP_INTERVAL_HOURS = 24   # Run cleanup daily
+    
+    # Data Freshness Validation
+    OHLCV_MAX_AGE_MINUTES = 60    # Default max age for OHLCV data (minutes)
+    OHLCV_MAX_AGE_BY_INTERVAL = {
+        '30m': 45,                 # 30m: Max 45 minutes stale (skip after 1.5 hours)
+        '1h': 90,                  # 1h: Max 90 minutes stale (skip after 1.5 hours)
+        '4h': 300,                 # 4h: Max 300 minutes stale (skip after 5 hours)
+        '1d': 1440,                # 1d: Max 1440 minutes stale (skip after 24 hours)
+        '2h': 120,                 # 2h: Max 120 minutes stale
+        '5m': 15,                  # 5m: Max 15 minutes stale
+        '15m': 30,                 # 15m: Max 30 minutes stale
+    }
     
     # Scan Intervals (for APScheduler)
     SCAN_INTERVALS = {
@@ -374,22 +329,24 @@ class Config:
     # SCHEDULER SETTINGS
     # ==========================================
     
-    EVENT_MODE_ENABLED = True
-    ENABLE_TIME_TRIGGERED_SIGNALS = False  # Event-driven mode only
-    
-    # ==========================================
-    # V2 EXECUTION ENGINE SETTINGS
-    # ==========================================
-    
-    # Real-time entry/SL/TP calculation for V1 signals
-    V2_EXECUTION_ENABLED = True  # If True, V2 enriches V1 signals with real-time prices
-    V1_RETURN_ENTRY_PRICES = False  # If True, use old V1 calculation as fallback
-
     # Run bot at these intervals
     SCHEDULER_INTERVALS = {
         '30m': 30,  # Run every 30 minutes for 30m timeframe
         '1h': 60    # Run every 60 minutes for 1h timeframe
     }
+    
+    # Event-driven mode settings
+    EVENT_MODE_ENABLED = True                    # Enable event-driven signal generation
+    TELEGRAM_NOTIFICATIONS_ENABLED = True        # Send Telegram notifications
+    TELEGRAM_SEND_FETCH_REPORTS = False          # Send data fetch reports
+    TELEGRAM_SEND_EVENT_ALERTS = True           # Send event detection alerts
+    TELEGRAM_SEND_HEALTH_REPORTS = False        # Send health check reports
+    TELEGRAM_SEND_EOD_REPORTS = False           # Send end-of-day reports
+    TELEGRAM_SEND_ERROR_ALERTS = True           # Send error alerts
+    
+    # Execution settings
+    V2_EXECUTION_ENABLED = True                  # Enable V2 execution engine
+    ENABLE_TIME_TRIGGERED_SIGNALS = False        # Optional time-based signal generation (disabled by default)
     
     # ==========================================
     # LOGGING SETTINGS
@@ -416,82 +373,7 @@ class Config:
     @classmethod
     def get_symbol_list(cls):
         """Return list of symbol names"""
-        return [symbol for symbol, meta in cls.WATCHLIST.items() if meta.get('enabled', True)]
-    
-    @classmethod
-    def is_market_open(cls) -> bool:
-        """
-        Check if forex market is currently open.
-        
-        Forex trading hours: Sunday 22:00 UTC → Friday 22:00 UTC
-        Market closed: Friday 22:00 UTC → Sunday 22:00 UTC (entire weekend)
-        
-        Returns:
-            bool: True if market is open, False if closed
-        """
-        from datetime import datetime, timezone
-        
-        now = datetime.now(timezone.utc)
-        day = now.weekday()  # 0=Monday, 4=Friday, 5=Saturday, 6=Sunday
-        hour = now.hour
-        
-        # Saturday: Always closed
-        if day == 5:
-            return False
-        
-        # Sunday: Opens at 22:00 UTC
-        if day == 6:
-            return hour >= cls.MARKET_OPEN_HOUR
-        
-        # Friday: Closes at 22:00 UTC
-        if day == 4:
-            return hour < cls.MARKET_CLOSE_HOUR
-        
-        # Monday-Thursday: Always open
-        return True
-    
-    @classmethod
-    def get_next_market_open(cls):
-        """
-        Get the timestamp of the next market open.
-        
-        Returns:
-            datetime: Next market open time (Sunday 22:00 UTC)
-        """
-        from datetime import datetime, timezone, timedelta
-        
-        now = datetime.now(timezone.utc)
-        day = now.weekday()
-        
-        # If Saturday
-        if day == 5:
-            # Next open: Sunday at 22:00
-            days_until_sunday = 1
-            next_open = (now + timedelta(days=days_until_sunday)).replace(
-                hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0
-            )
-            return next_open
-        
-        # If Sunday before 22:00
-        if day == 6 and now.hour < cls.MARKET_OPEN_HOUR:
-            # Opens today at 22:00
-            return now.replace(hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0)
-        
-        # If Friday after 22:00
-        if day == 4 and now.hour >= cls.MARKET_CLOSE_HOUR:
-            # Next open: Sunday at 22:00 (2 days later)
-            next_open = (now + timedelta(days=2)).replace(
-                hour=cls.MARKET_OPEN_HOUR, minute=0, second=0, microsecond=0
-            )
-            return next_open
-        
-        # Market already open
-        return now
-    
-    @classmethod
-    def get_symbol_list(cls):
-        """Return list of symbol names"""
-        return [symbol for symbol, meta in cls.WATCHLIST.items() if meta.get('enabled', True)]
+        return list(cls.WATCHLIST.keys())
     
     @classmethod
     def get_yahoo_symbol(cls, symbol):
@@ -538,3 +420,51 @@ class Config:
         print(f"Watchlist: {len(cls.WATCHLIST)} symbols")
         print(f"Target Efficiency: {cls.TARGET_EFFICIENCY * 100}%")
         print("=" * 60)
+    
+    @classmethod
+    def is_market_open(cls):
+        """
+        Check if forex market is currently open (24/5 - closed on weekends).
+        Always returns True for weekday trading hours (Mon-Fri).
+        """
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        weekday = now.weekday()  # 0=Mon, 6=Sun
+        
+        # Forex market closed on weekends (5=Sat, 6=Sun)
+        if weekday >= 5:
+            return False
+        
+        return True
+    
+    @classmethod
+    def get_next_market_open(cls):
+        """
+        Get datetime of next forex market open.
+        Forex opens Sunday 17:00 UTC, closes Friday 17:00 UTC.
+        """
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        weekday = now.weekday()  # 0=Mon, 6=Sun
+        
+        # If Friday evening (17:00+), next open is Sunday 17:00
+        if weekday == 4:  # Friday
+            days_until_sunday = 2
+            next_open = now + timedelta(days=days_until_sunday)
+            next_open = next_open.replace(hour=17, minute=0, second=0, microsecond=0)
+            return next_open
+        
+        # If weekend (Sat/Sun), calculate to next Monday
+        if weekday >= 5:  # Saturday or Sunday
+            days_until_monday = (7 - weekday) % 7
+            if days_until_monday == 0:
+                days_until_monday = 7
+            next_open = now + timedelta(days=days_until_monday)
+            next_open = next_open.replace(hour=17, minute=0, second=0, microsecond=0)
+            return next_open
+        
+        # Weekday - next open is either today or tomorrow
+        # Assume market opens at start of trading day (varies, but use 17:00 UTC as reference)
+        next_open = now + timedelta(days=1)
+        next_open = next_open.replace(hour=17, minute=0, second=0, microsecond=0)
+        return next_open

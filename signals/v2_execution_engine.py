@@ -13,6 +13,20 @@ NOT responsible for:
 - State tracking (V2 strategy does this)
 """
 
+# ============================================================================
+# SYSTEM RULE - CORE FILE PROTECTION
+# ============================================================================
+# This file is CRITICAL INFRASTRUCTURE and must NEVER be replaced.
+# Only patch/modify existing logic.
+#
+# Replacing this file causes:
+#   - Trade construction to fail
+#   - Invalid entry/SL/TP calculations
+#   - Complete signal-to-trade pipeline breakage
+#
+# Recovery: Always use git to restore or patch existing logic
+# ============================================================================
+
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional

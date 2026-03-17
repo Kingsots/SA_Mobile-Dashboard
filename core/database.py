@@ -3,6 +3,25 @@ Database Manager
 Unified database handling for all timeframes and symbols.
 """
 
+# ============================================================================
+# SYSTEM RULE - CORE FILE PROTECTION
+# ============================================================================
+# This file is CRITICAL INFRASTRUCTURE and must NEVER be replaced.
+# Only patch/modify existing logic.
+# 
+# DO NOT:
+#   - Replace this file with a stripped version
+#   - Remove methods without approval
+#   - Move to a different location
+#
+# Any deployment that replaces this file will cause:
+#   - Loss of strategy state persistence → signals freeze
+#   - Loss of event deduplication → duplicate trades
+#   - Loss of job tracking → audit trail broken
+#
+# Recovery: Restore from database.py in project root
+# ============================================================================
+
 import importlib
 import logging
 import sqlite3
@@ -35,6 +54,9 @@ class DatabaseManager:
             db_path: Path to database file (default: from config)
         """
         self.db_path = db_path or Config.DB_PATH
+        # Persistent connection - ensures all DB ops see consistent state (prevents race conditions)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
         self.init_database()
     
     def init_database(self):
@@ -258,6 +280,27 @@ class DatabaseManager:
         """Ensure ml_signals table contains triggered_by column."""
         if not self._column_exists(cursor, 'ml_signals', 'triggered_by'):
             cursor.execute("ALTER TABLE ml_signals ADD COLUMN triggered_by TEXT DEFAULT 'time'")
+
+    def _ensure_trade_construction_columns(self, cursor: sqlite3.Cursor) -> None:
+        """Ensure ml_signals table contains all trade construction columns."""
+        trade_columns = {
+            'trade_id': 'TEXT',
+            'entry_price': 'REAL',
+            'stop_loss': 'REAL',
+            'take_profit': 'REAL',
+            'risk_reward': 'REAL',
+            'entry_type': 'TEXT',
+            'signal_candle_time': 'INTEGER',
+            'expiry_timestamp': 'INTEGER',
+            'expiry_candles': 'INTEGER',
+        }
+        
+        for col_name, col_type in trade_columns.items():
+            if not self._column_exists(cursor, 'ml_signals', col_name):
+                try:
+                    cursor.execute(f"ALTER TABLE ml_signals ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass  # Column may already exist
 
     def _run_migrations(self) -> None:
         """Execute registered migrations against the configured database."""
@@ -874,6 +917,99 @@ class DatabaseManager:
             print(f"❌ Error loading features: {e}")
             return None
     
+    def has_recent_signal(self, ticker: str, interval: str, signal: int, minutes: int = 30) -> bool:
+        """
+        Check if a recent signal with the same ticker/interval/direction exists.
+        Used to prevent duplicate signal generation from persistent market conditions.
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            signal: Signal direction (1=BUY, -1=SELL)
+            minutes: Lookback window in minutes (default: 30)
+            
+        Returns:
+            True if a recent signal exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get current time and cutoff (now - minutes)
+            now_timestamp = datetime.now(timezone.utc).isoformat()
+            cutoff_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            
+            cursor.execute(
+                '''
+                SELECT COUNT(*) FROM ml_signals 
+                WHERE ticker = ? AND interval = ? AND signal = ? AND timestamp > ?
+                LIMIT 1
+                ''',
+                (ticker, interval, signal, cutoff_time)
+            )
+            
+            count = cursor.fetchone()[0]
+            conn.close()
+            
+            return count > 0
+        except Exception as e:
+            print(f"⚠️  Error checking for recent signals: {e}")
+            return False
+    
+    def has_recent_signal_with_price(
+        self, 
+        ticker: str, 
+        interval: str, 
+        signal: int,
+        entry_price: float,
+        price_tolerance: float,
+        minutes: int = 60
+    ) -> bool:
+        """
+        Check if an identical signal exists (same ticker/interval/direction and entry price).
+        Allows new breakouts at different prices while blocking exact duplicates.
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            signal: Signal direction (1=BUY, -1=SELL)
+            entry_price: Entry price from new signal
+            price_tolerance: Max price difference to consider as duplicate
+            minutes: Lookback window in minutes (default: 60)
+            
+        Returns:
+            True if an identical signal exists within tolerance, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cutoff_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            
+            # Check for signals with same ticker/interval/direction and entry price within tolerance
+            cursor.execute(
+                '''
+                SELECT COUNT(*) FROM ml_signals 
+                WHERE ticker = ? 
+                AND interval = ? 
+                AND signal = ? 
+                AND timestamp > ?
+                AND entry_price IS NOT NULL
+                AND entry_price >= ? AND entry_price <= ?
+                LIMIT 1
+                ''',
+                (ticker, interval, signal, cutoff_time, 
+                 entry_price - price_tolerance, entry_price + price_tolerance)
+            )
+            
+            count = cursor.fetchone()[0]
+            conn.close()
+            
+            return count > 0
+        except Exception as e:
+            print(f"⚠️  Error checking for signal with price: {e}")
+            return False
+    
     def save_ml_signal(
         self,
         ticker: str,
@@ -886,6 +1022,15 @@ class DatabaseManager:
         *,
         triggered_by: str = 'time',
         strategy_version: str = 'v1',
+        trade_id: Optional[str] = None,
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        risk_reward: Optional[float] = None,
+        entry_type: Optional[str] = None,
+        signal_candle_time: Optional[int] = None,
+        expiry_timestamp: Optional[int] = None,
+        expiry_candles: Optional[int] = None,
     ):
         """
         Save ML-generated signal to ml_signals table
@@ -900,16 +1045,30 @@ class DatabaseManager:
             model_version: Model version identifier
             triggered_by: Signal source (time-based or event-based)
             strategy_version: Strategy engine (v1 or v2)
+            trade_id: Unique trade signal ID
+            entry_price: Calculated breakout entry price
+            stop_loss: Calculated stop loss price
+            take_profit: Calculated take profit price
+            risk_reward: Risk-reward ratio
+            entry_type: Entry model type (e.g., 'breakout_confirmation')
+            signal_candle_time: Unix timestamp of signal candle
+            expiry_timestamp: Unix timestamp when trade expires
+            expiry_candles: Number of candles until expiry
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         try:
+            # Ensure trade construction columns exist
+            self._ensure_trade_construction_columns(cursor)
+            
             cursor.execute(
                 '''
-            INSERT INTO ml_signals 
-            (timestamp, ticker, interval, signal, confidence, feature_snapshot, model_version, triggered_by, strategy_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO ml_signals 
+            (timestamp, ticker, interval, signal, confidence, feature_snapshot, model_version, 
+             triggered_by, strategy_version, trade_id, entry_price, stop_loss, take_profit, 
+             risk_reward, entry_type, signal_candle_time, expiry_timestamp, expiry_candles)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     timestamp,
@@ -921,18 +1080,29 @@ class DatabaseManager:
                     model_version,
                     triggered_by,
                     strategy_version,
+                    trade_id,
+                    entry_price,
+                    stop_loss,
+                    take_profit,
+                    risk_reward,
+                    entry_type,
+                    signal_candle_time,
+                    expiry_timestamp,
+                    expiry_candles,
                 ),
             )
             conn.commit()
+            return True
         except Exception as e:
             print(f"❌ Error saving ML signal: {e}")
+            return False
         finally:
             conn.close()
     
     def log_api_usage(self, api_name: str, endpoint: str, ticker: str, 
                      interval: str, success: bool, error_msg: str = None):
         """
-        Log API usage to api_usage table
+        Log API usage to api_usage table using shared connection
         
         Args:
             api_name: API name (e.g., 'tiingo')
@@ -942,8 +1112,7 @@ class DatabaseManager:
             success: Whether request succeeded
             error_msg: Error message if failed
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        cursor = self.conn.cursor()
         
         try:
             cursor.execute('''
@@ -959,11 +1128,40 @@ class DatabaseManager:
                 1 if success else 0,
                 error_msg
             ))
-            conn.commit()
+            self.conn.commit()
         except Exception as e:
             print(f"❌ Error logging API usage: {e}")
-        finally:
-            conn.close()
+    
+    def api_call_exists(self, ticker: str, interval: str, cutoff_minutes: int = 2) -> bool:
+        """
+        Check if API call was recently made for ticker/interval (prevents duplicates)
+        
+        Uses shared connection to ensure accurate dedup across parallel calls.
+        
+        Args:
+            ticker: Symbol to check
+            interval: Timeframe to check
+            cutoff_minutes: Consider "recent" as within last N minutes
+            
+        Returns:
+            True if recent successful API call exists, False otherwise
+        """
+        try:
+            cursor = self.conn.cursor()
+            cutoff = (datetime.now() - timedelta(minutes=cutoff_minutes)).isoformat()
+            
+            cursor.execute('''
+                SELECT 1 FROM api_usage 
+                WHERE ticker = ? AND interval = ? 
+                AND api_name = 'tiingo' AND success = 1
+                AND timestamp > ?
+                LIMIT 1
+            ''', (ticker, interval, cutoff))
+            
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logging.error(f"Error checking API call exists: {e}")
+            return False
     
     def cleanup_old_data(self, days: int = 90):
         """
@@ -1245,6 +1443,200 @@ class DatabaseManager:
             print(f"❌ Error cleaning old processed events: {e}")
         finally:
             conn.close()
+
+    def expire_old_trades(self, hours_30m: int = 24, hours_1h: int = 48, hours_4h: int = 72) -> int:
+        """
+        Automatically close old trades that haven't been updated.
+        ONLY expires if age > threshold AND price moved past TP/SL monitoring window.
+        
+        This prevents expiring trades that are still logically valid (in monitoring range).
+        
+        Args:
+            hours_30m: Close 30m trades after N hours (default 24h)
+            hours_1h: Close 1h trades after N hours (default 48h)
+            hours_4h: Close 4h trades after N hours (default 72h)
+            
+        Returns:
+            Number of trades expired
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Define expiration thresholds by interval
+            expirations = [
+                ('30m', hours_30m),
+                ('1h', hours_1h),
+                ('4h', hours_4h),
+            ]
+            
+            total_expired = 0
+            now = datetime.now()
+            
+            for interval, hours in expirations:
+                cutoff_time = (now - timedelta(hours=hours)).isoformat()
+                
+                # Get all old ACTIVE trades for this interval
+                cursor.execute('''
+                SELECT id, symbol, direction, entry_price, stop_loss, take_profit 
+                FROM trades 
+                WHERE interval = ? AND status = 'ACTIVE' AND created_at < ?
+                ''', (interval, cutoff_time))
+                
+                old_trades = cursor.fetchall()
+                
+                # Check each trade - only expire if price moved past monitoring window
+                for trade_id, symbol, direction, entry_price, sl, tp in old_trades:
+                    # Get latest price for this symbol (note: ohlcv_data uses 'timeframe' column)
+                    cursor.execute('''
+                    SELECT close FROM ohlcv_data 
+                    WHERE symbol = ? AND timeframe = ? 
+                    ORDER BY timestamp DESC LIMIT 1
+                    ''', (symbol, interval))
+                    
+                    price_row = cursor.fetchone()
+                    if price_row is None:
+                        # No price data - expire conservatively
+                        cursor.execute('UPDATE trades SET status = ? WHERE id = ?', ('EXPIRED', trade_id))
+                        total_expired += 1
+                        continue
+                    
+                    current_price = float(price_row[0])
+                    
+                    # Determine if price moved past monitoring window
+                    is_outside_range = False
+                    
+                    if direction == 'BUY':
+                        # BUY: monitoring is entry to TP (profit side) or entry to SL (loss side)
+                        is_outside_range = (current_price > tp) or (current_price < sl)
+                    else:  # SELL
+                        # SELL: monitoring is entry down to TP or up to SL
+                        is_outside_range = (current_price < tp) or (current_price > sl)
+                    
+                    # Only expire if price moved past monitoring window
+                    if is_outside_range:
+                        cursor.execute('UPDATE trades SET status = ? WHERE id = ?', ('EXPIRED', trade_id))
+                        total_expired += 1
+                        logging.info(
+                            f"[TRADE_EXPIRATION] Expired {direction} {symbol}-{interval} "
+                            f"(age>{hours}h, price {current_price:.5f} outside TP/SL range)"
+                        )
+                    else:
+                        logging.debug(
+                            f"[TRADE_EXPIRATION] Keeping {symbol}-{interval} despite age>{hours}h "
+                            f"(price {current_price:.5f} in range [{min(sl,tp):.5f}, {max(sl,tp):.5f}])"
+                        )
+            
+            conn.commit()
+            return total_expired
+            
+        except Exception as e:
+            logging.error(f"Error in expire_old_trades: {e}")
+            return 0
+        finally:
+            conn.close()
+
+    def has_active_trade(self, symbol: str, interval: str) -> bool:
+        """
+        Check if an ACTIVE trade exists for symbol/interval.
+        Only blocks if trade status is 'ACTIVE' - allows new signals after trade closes.
+        
+        Args:
+            symbol: Trading symbol
+            interval: Timeframe
+            
+        Returns:
+            True if ACTIVE trade exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM trades 
+            WHERE symbol = ? AND interval = ? AND status = 'ACTIVE'
+            ''', (symbol, interval))
+            
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False
+        except Exception as e:
+            logging.warning(f"Error checking has_active_trade for {symbol}-{interval}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def trade_exists(self, symbol: str, interval: str, direction: str, entry_price: float) -> bool:
+        """
+        Check if a trade already exists (prevents duplicate entry signals)
+        DEPRECATED: Use has_active_trade() instead for better behavior
+        
+        Args:
+            symbol: Trading symbol
+            interval: Timeframe
+            direction: Trade direction ('BUY' or 'SELL')
+            entry_price: Entry price
+            
+        Returns:
+            True if trade exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Convert direction to signal value (BUY=1, SELL=-1)
+            signal_value = 1 if direction == 'BUY' else -1
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM ml_signals 
+            WHERE ticker = ? AND interval = ? AND signal = ?
+            AND entry_price IS NOT NULL
+            AND ABS(entry_price - ?) < 0.0001
+            ''', (symbol, interval, signal_value, entry_price))
+            
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False
+        except Exception as e:
+            logging.warning(f"Error checking trade_exists for {symbol}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def save_trade(self, trade_data: Dict) -> bool:
+        """
+        Save trade data to ml_signals table
+        
+        Args:
+            trade_data: Dictionary with trade information (ticker, signal, entry_price, etc.)
+            
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        if not trade_data or 'ticker' not in trade_data:
+            return False
+            
+        try:
+            return self.save_ml_signal(
+                ticker=trade_data.get('ticker'),
+                timestamp=trade_data.get('timestamp'),
+                interval=trade_data.get('interval'),
+                signal=trade_data.get('signal', 0),
+                confidence=trade_data.get('confidence', 1.0),
+                feature_snapshot=trade_data.get('feature_snapshot', '{}'),
+                model_version=trade_data.get('model_version', 'strategy_core_v2'),
+                triggered_by=trade_data.get('triggered_by', 'v2_persistence'),
+                trade_id=trade_data.get('trade_id'),
+                entry_price=trade_data.get('entry_price'),
+                stop_loss=trade_data.get('stop_loss'),
+                take_profit=trade_data.get('take_profit'),
+                risk_reward=trade_data.get('risk_reward'),
+                entry_type=trade_data.get('entry_type'),
+                signal_candle_time=trade_data.get('signal_candle_time'),
+                expiry_timestamp=trade_data.get('expiry_timestamp'),
+                expiry_candles=trade_data.get('expiry_candles'),
+            )
+        except Exception as e:
+            logging.error(f"Error saving trade: {e}")
+            return False
 
     def get_processed_events_count(self) -> int:
         """

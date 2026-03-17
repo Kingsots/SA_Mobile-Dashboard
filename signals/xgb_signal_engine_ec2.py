@@ -6,6 +6,7 @@ No ML model dependencies
 
 import json
 import logging
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,9 @@ from core.database import DatabaseManager
 from core.pipeline_tracker import get_tracker
 from signals.event_filter import MarketEvent
 from alerts.telegram_bot import TelegramBot
+from signals.trade_signal import TradeSignal
+from signals.trade_constructor import build_trade_signal
+from signals.trade_validator import validate_trade_signal, is_trade_expired
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PURE STRATEGY ENGINE - DUAL CONCURRENT STRATEGIES
@@ -103,6 +107,19 @@ class PureStrategyEngine:
         self._last_event_result: Optional[Dict[str, Any]] = None
         self.model = None  # Backward compatibility - pure strategy has no ML model
         
+        # Broadcast-level dedup cache: prevents same trade from broadcasting multiple times within 30 seconds
+        # Key: f"{ticker}-{interval}-{direction}-{entry_price:.4f}"
+        # Value: timestamp of last broadcast
+        self._recent_broadcasts: Dict[str, float] = {}
+        self._broadcast_dedup_window = 30  # seconds
+        
+        # Initialize Telegram for alerts
+        try:
+            self.telegram_bot = TelegramBot()
+        except Exception as e:
+            logging.warning(f"Telegram initialization failed: {e}")
+            self.telegram_bot = None
+        
         print("\n" + "="*70)
         print("✅ Pure Strategy Engine Initialized")
         print(f"   V1 Available: {STRATEGY_V1_AVAILABLE}")
@@ -112,6 +129,192 @@ class PureStrategyEngine:
     def load_model(self):
         """Backward compatibility - pure strategy needs no model loading"""
         pass
+    
+    def _is_duplicate_trade(self, ticker: str, interval: str, direction: int, entry_price: float) -> bool:
+        """
+        Check if an active trade with identical signature already exists in database.
+        Prevents V1/V2 dual-strategy broadcast spam until trade is closed.
+        
+        Signature: {ticker}-{interval}-{direction}-{entry_price}
+        
+        Args:
+            ticker: Symbol
+            interval: Timeframe
+            direction: 1=BUY, -1=SELL
+            entry_price: Entry price to check
+            
+        Returns:
+            True if active trade with same signature exists, False otherwise
+        """
+        # Master toggle
+        if not Config.ENABLE_DUPLICATE_PREVENTION:
+            return False
+        
+        try:
+            direction_text = 'BUY' if direction == 1 else 'SELL'
+            trade_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
+            
+            # Query for active trades with this exact signature
+            query = """
+                SELECT COUNT(*) FROM trades 
+                WHERE symbol = %s 
+                AND interval = %s 
+                AND direction = %s 
+                AND entry_price >= %s AND entry_price <= %s
+                AND status IN ('active', 'pending')
+            """
+            
+            # Allow 0.0001 price tolerance for floating point comparison
+            price_tolerance = 0.0001
+            
+            result = self.db.fetch_one(query, [
+                ticker,
+                interval,
+                direction_text,
+                entry_price - price_tolerance,
+                entry_price + price_tolerance
+            ])
+            
+            if result and result[0] > 0:
+                logging.warning(
+                    f"[DUPLICATE_PREVENTION] Trade still active: {trade_key} | "
+                    f"BLOCKING DUPLICATE BROADCAST"
+                )
+                return True
+            
+            return False
+        
+        except Exception as e:
+            logging.error(f"[DUPLICATE_PREVENTION] Database check failed: {e} | Allowing broadcast")
+            return False  # On error, allow broadcast rather than block
+
+    def load_model(self):
+        """Backward compatibility - pure strategy needs no model loading"""
+        pass
+
+    def _is_recent_broadcast(self, ticker: str, interval: str, direction: int, entry_price: float) -> bool:
+        """
+        Check if this exact trade was broadcast within the last 30 seconds (broadcast dedup).
+        Prevents EventMonitor from broadcasting same breakout condition multiple times per scan.
+        
+        Args:
+            ticker: Symbol
+            interval: Timeframe
+            direction: 1=BUY, -1=SELL
+            entry_price: Entry price
+            
+        Returns:
+            True if broadcast within 30 seconds, False otherwise
+        """
+        direction_text = 'BUY' if direction == 1 else 'SELL'
+        broadcast_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
+        
+        now = datetime.now(timezone.utc).timestamp()
+        
+        # Clean expired broadcasts
+        expired_keys = [k for k, v in self._recent_broadcasts.items() 
+                       if now - v > self._broadcast_dedup_window]
+        for k in expired_keys:
+            del self._recent_broadcasts[k]
+        
+        # Check if recent broadcast exists
+        if broadcast_key in self._recent_broadcasts:
+            time_since = now - self._recent_broadcasts[broadcast_key]
+            logging.info(
+                f"[BROADCAST_DEDUP] SKIPPED: {broadcast_key} "
+                f"(broadcast {time_since:.1f}s ago, within {self._broadcast_dedup_window}s window)"
+            )
+            return True
+        
+        return False
+
+    def _record_broadcast(self, ticker: str, interval: str, direction: int, entry_price: float) -> None:
+        """
+        Record that this trade was just broadcast.
+        
+        Args:
+            ticker: Symbol
+            interval: Timeframe
+            direction: 1=BUY, -1=SELL
+            entry_price: Entry price
+        """
+        direction_text = 'BUY' if direction == 1 else 'SELL'
+        broadcast_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
+        now = datetime.now(timezone.utc).timestamp()
+        self._recent_broadcasts[broadcast_key] = now
+
+    def broadcast_trade_signal(self, signal_data: Dict[str, Any]) -> None:
+        """
+        Send constructed trade signal to Telegram alerts.
+        
+        Args:
+            signal_data: Complete signal dict with trade construction fields
+        """
+        if not signal_data:
+            logging.debug("broadcast_trade_signal: No signal_data provided")
+            return
+            
+        if not self.telegram_bot:
+            logging.debug("broadcast_trade_signal: Telegram bot not initialized")
+            return
+        
+        try:
+            # Extract key info
+            ticker = signal_data.get('ticker', 'UNKNOWN')
+            interval = signal_data.get('interval', 'unknown')
+            direction = signal_data.get('signal', 0)
+            entry = signal_data.get('entry_price', 0)
+            
+            # BROADCAST-LEVEL DEDUP: Check if this exact trade was broadcast in last 30 seconds
+            if self._is_recent_broadcast(ticker, interval, direction, entry):
+                logging.info(f"[BROADCAST_DEDUP] Skipped duplicate broadcast for {ticker} {interval}")
+                return
+            
+            # Format signal direction
+            if direction == 1:
+                emoji = '🟢'
+                direction_text = 'BUY'
+            elif direction == -1:
+                emoji = '🔴'
+                direction_text = 'SELL'
+            else:
+                emoji = '⚪'
+                direction_text = 'NEUTRAL'
+            
+            # Build alert message
+            sl = signal_data.get('stop_loss', 0)
+            tp = signal_data.get('take_profit', 0)
+            rr = signal_data.get('risk_reward', 0)
+            trade_id = signal_data.get('trade_id', 'N/A')[:12]
+            
+            alert_msg = f"""
+{emoji} TRADE SIGNAL CONSTRUCTED
+
+Symbol: {ticker}
+Timeframe: {interval}
+Direction: {direction_text}
+Trade ID: {trade_id}
+
+Entry:  {entry:.4f}
+Stop Loss: {sl:.4f}
+Take Profit: {tp:.4f}
+Risk-Reward: {rr:.2f}:1
+
+Entry Type: Breakout Confirmation
+Status: Active in Database
+"""
+            
+            logging.info(f"Broadcasting to Telegram: {ticker} {direction_text}")
+            success = self.telegram_bot.send_message(alert_msg.strip())
+            if success:
+                logging.info(f"✅ Telegram broadcast sent for {ticker}-{interval} {direction_text}")
+                # Record this broadcast to dedup future attempts
+                self._record_broadcast(ticker, interval, direction, entry)
+            else:
+                logging.error(f"❌ Telegram send failed for {ticker}-{interval} {direction_text} - check bot credentials")
+        
+        except Exception as e:
+            logging.error(f"❌ Failed to broadcast signal to Telegram: {e}", exc_info=True)
 
     def get_latest_ohlcv(self, ticker: str, interval: str, lookback: int = 500) -> Optional[pd.DataFrame]:
         """
@@ -147,6 +350,241 @@ class PureStrategyEngine:
 
     def _log_event_debug(self, payload: Dict[str, Any]) -> None:
         event_logger.info(json.dumps(payload, default=_json_default))
+
+    def execute_trade_pipeline(
+        self,
+        ticker: str,
+        interval: str,
+        strategy_name: str,
+        direction: int,
+        df_ohlcv: pd.DataFrame,
+        confidence: float = 1.0,
+        source: str = "unified_pipeline",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Universal trade execution pipeline: Build signal → Validate → Check expiry.
+        
+        Used by all signal sources (V1 event, V2 event, V2 persistence, scheduled).
+        Single source of truth for trade construction, validation, and risk management.
+        
+        Args:
+            ticker: Symbol to evaluate
+            interval: Timeframe
+            strategy_name: Strategy identifier (e.g., 'strategy_core_v1', 'v2_persistence')
+            direction: Signal direction (1=BUY, -1=SELL, 0=NEUTRAL)
+            df_ohlcv: OHLCV DataFrame with columns [open, high, low, close, volume]
+            confidence: Signal confidence level (0-1)
+            source: Signal source identifier for logging
+            metadata: Optional metadata dict
+            
+        Returns:
+            Dict with signal data (entry, SL, TP, etc.) or None if filtered
+        """
+        try:
+            # ═══════════════════════════════════════════════════════════════════════
+            # LOG 1: ENTERING PIPELINE
+            # ═══════════════════════════════════════════════════════════════════════
+            logging.info(f"[PIPELINE_EXECUTION] LOG 1: Entering execute_trade_pipeline | {ticker}-{interval} | direction={direction} | source={source}")
+            
+            if direction == 0:
+                logging.debug(f"[PIPELINE_EXECUTION] Neutral signal, returning None")
+                return None
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # LOG 2: RECEIVED SIGNAL DATA
+            # ═══════════════════════════════════════════════════════════════════════
+            logging.info(f"[PIPELINE_EXECUTION] LOG 2: Received signal data | ticker={ticker} | interval={interval} | strategy={strategy_name} | confidence={confidence}")
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # STEP 1: BUILD TRADE SIGNAL (Entry, SL, TP calculation)
+            # ═══════════════════════════════════════════════════════════════════════
+            logging.info(f"[PIPELINE_EXECUTION] LOG 3: Starting entry/SL/TP calculation via build_trade_signal()")
+            trade_signal = build_trade_signal(
+                ticker=ticker,
+                interval=interval,
+                df_ohlcv=df_ohlcv,
+                direction=direction,
+                strategy_name=strategy_name,
+                confidence=confidence,
+            )
+            
+            if trade_signal is None:
+                logging.error(f"[PIPELINE_EXECUTION] LOG 3 FAILED: build_trade_signal() returned None for {ticker}-{interval}")
+                logging.debug(f"[{source}] Trade construction failed for {ticker}-{interval}")
+                logging.warning(f"[PIPELINE] 1A BUILD FAILED | signal={ticker}-{interval}-{direction} | {ticker}-{interval}")
+                return None
+
+            logging.info(f"[PIPELINE_EXECUTION] LOG 4: Entry calculated | price={trade_signal.entry_price:.4f}")
+            logging.info(f"[PIPELINE_EXECUTION] LOG 5: Stop loss calculated | price={trade_signal.stop_loss:.4f}")
+            logging.info(f"[PIPELINE_EXECUTION] LOG 6: Take profit calculated | price={trade_signal.take_profit:.4f}")
+            logging.info(f"[PIPELINE_EXECUTION] LOG 6B: Trade object created | trade_id={trade_signal.trade_id} | RR={trade_signal.risk_reward:.2f}:1")
+
+            signal_id = f"{ticker}-{interval}-{trade_signal.signal_candle_time}"
+            logging.info(f"[PIPELINE] 1A BUILD OK | signal={signal_id} | {ticker}-{interval} dir={direction}")
+            # ═══════════════════════════════════════════════════════════════════════
+            # STEP 2: VALIDATE TRADE SIGNAL (5-rule risk gate)
+            # ═══════════════════════════════════════════════════════════════════════
+            if not validate_trade_signal(trade_signal):
+                logging.error(
+                    f"[PIPELINE_EXECUTION] Validation gate rejected: {trade_signal.rejection_reason}"
+                )
+                logging.warning(
+                    f"[{source}] Trade rejected for {ticker}-{interval}: {trade_signal.rejection_reason}"
+                )
+                logging.warning(f"[PIPELINE] 1B VALIDATION FAILED | signal={signal_id} | {ticker}-{interval}: {trade_signal.rejection_reason}")
+                return None
+
+            logging.info(f"[PIPELINE] 1B VALIDATION OK | signal={signal_id} | {ticker}-{interval}")
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # STEP 3: CHECK TRADE EXPIRY (stale signal filtering)
+            # ═══════════════════════════════════════════════════════════════════════
+            if is_trade_expired(trade_signal):
+                logging.warning(f"[PIPELINE_EXECUTION] Trade expired for {signal_id}")
+                logging.info(
+                    f"[{source}] Trade expired: {trade_signal.trade_id} ({ticker}-{interval}). "
+                    f"Breakout window closed."
+                )
+                logging.warning(f"[PIPELINE] 1C EXPIRED | signal={signal_id} | {ticker}-{interval}")
+                return None
+
+            logging.info(f"[PIPELINE] 1C EXPIRY OK | signal={signal_id} | {ticker}-{interval}")
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # STEP 4: BUILD COMPLETE SIGNAL DATA FOR DISTRIBUTION
+            # ═══════════════════════════════════════════════════════════════════════
+            
+            # Extract timestamp
+            if 'timestamp' in df_ohlcv.columns:
+                timestamp = df_ohlcv['timestamp'].iloc[-1]
+            else:
+                timestamp = df_ohlcv.index[-1]
+            
+            feature_dt = pd.Timestamp(timestamp).to_pydatetime()
+            feature_age_min = (datetime.now(timezone.utc) - feature_dt).total_seconds() / 60.0
+            
+            # Collect feature snapshot
+            feature_col_names = [
+                'open', 'high', 'low', 'close', 'volume',
+                'ema_21', 'ema_100', 'rsi_14',
+                'obv', 'ad', 'vwap', 'vwap_slope',
+                'volume_sma_20', 'volume_ratio'
+            ]
+            
+            features_snapshot: Dict[str, Any] = {}
+            for col in feature_col_names:
+                if col in df_ohlcv.columns:
+                    value = df_ohlcv[col].iloc[-1]
+                    if pd.isna(value):
+                        features_snapshot[col] = None
+                    elif isinstance(value, np.generic):
+                        features_snapshot[col] = value.item()
+                    else:
+                        try:
+                            features_snapshot[col] = float(value)
+                        except (ValueError, TypeError):
+                            features_snapshot[col] = None
+            
+            clean_snapshot = {
+                k: (float(v) if v is not None else None)
+                for k, v in features_snapshot.items()
+            }
+            
+            # Build complete signal data
+            signal_data: Dict[str, Any] = {
+                # Core signal info
+                'ticker': ticker,
+                'interval': interval,
+                'timestamp': pd.Timestamp(timestamp).isoformat(),
+                'feature_timestamp': pd.Timestamp(timestamp).isoformat(),
+                'feature_age_minutes': round(feature_age_min, 2),
+                'signal': trade_signal.direction,
+                'direction': trade_signal.direction,  # REQUIRED for dedup check
+                'signal_label': trade_signal.get_signal_label(),
+                'confidence': confidence,
+                'source': strategy_name,
+                'model_version': strategy_name,
+                'signal_source': source,  # Distinguish between V1, V2, persistence, event
+                
+                # Trade execution prices
+                'trade_id': trade_signal.trade_id,
+                'entry_price': trade_signal.entry_price,
+                'stop_loss': trade_signal.stop_loss,
+                'take_profit': trade_signal.take_profit,
+                'risk_reward': trade_signal.risk_reward,
+                'risk_amount': trade_signal.get_risk_amount(),
+                'risk_percent': round((trade_signal.get_risk_amount() / trade_signal.entry_price) * 100, 3),
+                'entry_type': trade_signal.entry_type,
+                
+                # Expiry metadata
+                'signal_candle_time': trade_signal.signal_candle_time,
+                'expiry_timestamp': trade_signal.expiry_timestamp,
+                'expiry_candles': trade_signal.expiry_candles,
+                
+                # Features
+                'features': clean_snapshot,
+            }
+            
+            # Add optional metadata
+            if metadata:
+                signal_data['metadata'] = metadata
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # LOG TRADE CONSTRUCTION (SUCCESS)
+            # ═══════════════════════════════════════════════════════════════════════
+            logging.info(
+                f"TRADE_CONSTRUCTED | {trade_signal.trade_id} | {ticker}-{interval} | "
+                f"entry={trade_signal.entry_price:.4f} | stop={trade_signal.stop_loss:.4f} | "
+                f"tp={trade_signal.take_profit:.4f} | rr={trade_signal.risk_reward:.2f} | "
+                f"source={source}"
+            )
+            
+            # ═══════════════════════════════════════════════════════════════════════
+            # STEP 5: CHECK FOR ACTIVE TRADE (only block if trade is currently active)
+            # This allows new signals after trades are closed/expired
+            dir_text = 'BUY' if trade_signal.direction == 1 else 'SELL'
+            if self.db.has_active_trade(ticker, interval):
+                logging.info(f'ACTIVE trade exists: {ticker}-{interval} - blocking new signal')
+                return None
+
+            # STEP 6: SAVE TO DATABASE (persist trade first)
+            logging.info(f"[PIPELINE_EXECUTION] LOG 7: Inserting signal into database | trade_id={trade_signal.trade_id}")
+            saved = self.db.save_trade(signal_data)
+            if not saved:
+                logging.error(f"[PIPELINE_EXECUTION] LOG 7 FAILED: Database save returned False for {ticker}-{interval} trade_id={trade_signal.trade_id}")
+                logging.warning(f'Failed to save trade {ticker}-{interval}')
+                return None
+
+            logging.info(f"[PIPELINE_EXECUTION] LOG 7 SUCCESS: Trade persisted to database | trade_id={trade_signal.trade_id}")
+
+            # STEP 7: BROADCAST TO TELEGRAM (only after persistence)
+            # CHECK FOR DUPLICATION: Prevent V1/V2 spam (same entry price within 5 min)
+            is_duplicate = self._is_duplicate_trade(
+                ticker=ticker,
+                interval=interval,
+                direction=trade_signal.direction,
+                entry_price=trade_signal.entry_price
+            )
+            
+            if is_duplicate:
+                logging.warning(
+                    f"[PIPELINE_EXECUTION] LOG 8 SKIPPED: Duplicate trade detected | "
+                    f"Entry: {trade_signal.entry_price:.4f} was broadcast recently | "
+                    f"trade_id={trade_signal.trade_id}"
+                )
+                return signal_data  # Still return signal_data (persisted), but don't broadcast
+            
+            logging.info(f"[PIPELINE_EXECUTION] LOG 8: Calling broadcast_trade_signal() | trade_id={trade_signal.trade_id} | {ticker}-{interval}")
+            self.broadcast_trade_signal(signal_data)
+            logging.info(f"[PIPELINE_EXECUTION] LOG 8 COMPLETE: Telegram broadcast attempted | trade_id={trade_signal.trade_id}")
+
+            return signal_data
+        
+        except Exception as e:
+            logging.error(f"[PIPELINE_EXECUTION] EXCEPTION in execute_trade_pipeline | {ticker}-{interval} | Exception: {e}")
+            logging.error(f"[PIPELINE_EXECUTION] FULL TRACEBACK:\n{traceback.format_exc()}")
+            return None
 
     def generate_signal(
         self,
@@ -214,60 +652,25 @@ class PureStrategyEngine:
         if core_signal is None or core_signal == 0:
             return None
         
-        # Extract timestamp
-        if 'timestamp' in df_ohlcv.columns:
-            timestamp = df_ohlcv['timestamp'].iloc[-1]
-        else:
-            timestamp = df_ohlcv.index[-1]
+        # UNIFIED PIPELINE: Call execute_trade_pipeline() for all signal construction
+        source_identifier = "v1_event" if strategy_name == "strategy_core_v1" else "v2_event"
+        if event is None:
+            source_identifier = "v1_scheduled" if strategy_name == "strategy_core_v1" else "v2_scheduled"
         
-        feature_dt = pd.Timestamp(timestamp).to_pydatetime()
-        feature_age_min = (datetime.now(timezone.utc) - feature_dt).total_seconds() / 60.0
+        signal_data = self.execute_trade_pipeline(
+            ticker=ticker,
+            interval=interval,
+            strategy_name=strategy_name,
+            direction=int(core_signal),
+            df_ohlcv=df_ohlcv,
+            confidence=0.95 if strategy_name == 'strategy_core_v2' else 1.0,
+            source=source_identifier,
+            metadata=trigger_metadata,
+        )
         
-        # NOTE: Entry/SL/TP calculation moved to V2 execution engine
-        # V1 returns pure direction signal only
+        if signal_data is None:
+            return None
         
-        # Build feature snapshot
-        feature_col_names = [
-            'open', 'high', 'low', 'close', 'volume',
-            'ema_21', 'ema_100', 'rsi_14',
-            'obv', 'ad', 'vwap', 'vwap_slope',
-            'volume_sma_20', 'volume_ratio'
-        ]
-        
-        features_snapshot: Dict[str, Any] = {}
-        for col in feature_col_names:
-            if col in df_ohlcv.columns:
-                value = df_ohlcv[col].iloc[-1]
-                if pd.isna(value):
-                    features_snapshot[col] = None
-                elif isinstance(value, np.generic):
-                    features_snapshot[col] = value.item()
-                else:
-                    try:
-                        features_snapshot[col] = float(value)
-                    except (ValueError, TypeError):
-                        features_snapshot[col] = None
-        
-        clean_snapshot = {
-            k: (float(v) if v is not None else None)
-            for k, v in features_snapshot.items()
-        }
-        
-        # Build signal data (V1: direction only, no execution prices)
-        signal_data: Dict[str, Any] = {
-            'ticker': ticker,
-            'interval': interval,
-            'timestamp': pd.Timestamp(timestamp).isoformat(),
-            'feature_timestamp': pd.Timestamp(timestamp).isoformat(),
-            'feature_age_minutes': round(feature_age_min, 2),
-            'signal': core_signal,
-            'signal_label': Config.ML_SIGNAL_LABELS[core_signal],
-            'confidence': 1.0,  # Pure strategy = deterministic
-            'source': strategy_name,
-            'model_version': strategy_name,
-            'v1_only': True,  # Indicates V1 output without execution prices
-            'features': clean_snapshot,
-        }
         
         # Log event signal generation
         if event is not None:
@@ -278,10 +681,15 @@ class PureStrategyEngine:
                 'event': event_payload,
                 'trigger_metadata': trigger_metadata,
                 'signal': {
-                    'signal': core_signal,
-                    'confidence': 1.0,
+                    'signal': signal_data['signal'],
+                    'confidence': signal_data['confidence'],
                     'timestamp': signal_data['timestamp'],
-                    'note': 'Entry/SL/TP calculated by V2 execution engine in real-time',
+                    'trade_construction': {
+                        'entry_price': signal_data['entry_price'],
+                        'stop_loss': signal_data['stop_loss'],
+                        'take_profit': signal_data['take_profit'],
+                        'risk_reward': signal_data['risk_reward'],
+                    }
                 },
             })
             self._last_event_key = event_payload['id']
@@ -302,14 +710,52 @@ class PureStrategyEngine:
         
         signal_data['trigger_context'] = trigger_context
         return signal_data
+
     
     def save_signal(self, signal_data: Dict[str, Any]) -> None:
         """
-        Save signal to database
+        Save signal to database with intelligent duplicate prevention.
+        
+        Checks for duplicate signals based on:
+        1. Same ticker+interval+direction
+        2. Similar entry price (within 0.5% tolerance)
+        3. Within 1-hour lookback window
+        
+        This prevents IDENTICAL setups while allowing new breakouts with different prices.
         
         Args:
             signal_data: Signal dictionary
+            
+        Returns:
+            None
         """
+        # ═════════════════════════════════════════════════════════════════════
+        # INTELLIGENT DEDUP CHECK: Prevent IDENTICAL signal regeneration
+        # ═════════════════════════════════════════════════════════════════════
+        ticker = signal_data['ticker']
+        interval = signal_data['interval']
+        signal_direction = signal_data['signal']
+        entry_price = signal_data.get('entry_price')
+        
+        # Only check for duplicates if we have entry price
+        if entry_price is not None:
+            # Check for recent signal with SAME entry price (same breakout level)
+            price_tolerance = entry_price * 0.005  # 0.5% tolerance
+            if self.db.has_recent_signal_with_price(
+                ticker, 
+                interval, 
+                signal_direction, 
+                entry_price,
+                price_tolerance,
+                minutes=60
+            ):
+                logging.warning(
+                    f"[DEDUP] SKIPPED: {ticker} {interval} {signal_direction:+d} @ {entry_price:.4f} "
+                    f"(identical signal detected in ml_signals, within 1hr)"
+                )
+                return
+        
+        # Signal passed dedup check - save to database
         trigger_source = signal_data.get('triggered_by') or 'time'
         
         # Determine strategy version from source
@@ -326,6 +772,14 @@ class PureStrategyEngine:
             model_version=signal_data['model_version'],
             triggered_by=trigger_source,
             strategy_version=strategy_version,
+            entry_price=signal_data.get('entry_price'),
+            stop_loss=signal_data.get('stop_loss'),
+            take_profit=signal_data.get('take_profit'),
+        )
+        
+        logging.info(
+            f"[SIGNAL_SAVED] {ticker} {interval} {signal_direction:+d} "
+            f"(confidence={signal_data['confidence']:.3f})"
         )
     
     def generate_signals(
@@ -414,41 +868,54 @@ class PureStrategyEngine:
                             pass  # Never let tracker crash signal flow
                         
                         # Log to signal_debug.log
+                        entry_data = ""
+                        if signal_v1.get('entry_price') is not None:
+                            entry_data = f" | Entry: {signal_v1['entry_price']:.5f} | SL: {signal_v1['stop_loss']:.5f} | TP: {signal_v1['take_profit']:.5f} | RR: {signal_v1['risk_reward']:.2f}"
                         signal_logger.info(
                             f"{symbol:10} | [V1] {signal_v1['signal_label']:8} | "
-                            f"Confidence: {signal_v1['confidence']:.1%}"
+                            f"Confidence: {signal_v1['confidence']:.1%}{entry_data}"
                         )
             
             if STRATEGY_V2_AVAILABLE:
-                signal_v2 = self.generate_signal(
-                    symbol,
-                    interval,
-                    'strategy_core_v2',
-                    metadata=symbol_metadata,
+                # Optional: Skip V2 if V1 already found signal (V1-first mode)
+                skip_v2 = (
+                    Config.STRATEGY_EVAL_MODE == 'v1_first' and 
+                    len(symbol_signals) > 0 and 
+                    any(s['signal'] != 0 for s in symbol_signals if s.get('source') == 'strategy_core_v1')
                 )
-                if signal_v2 is not None:
-                    symbol_signals.append(signal_v2)
-                    strategies.append('V2')
-                    
-                    # Save to database
-                    if signal_v2['signal'] != 0:
-                        self.save_signal(signal_v2)
+                
+                if not skip_v2:
+                    signal_v2 = self.generate_signal(
+                        symbol,
+                        interval,
+                        'strategy_core_v2',
+                        metadata=symbol_metadata,
+                    )
+                    if signal_v2 is not None:
+                        symbol_signals.append(signal_v2)
+                        strategies.append('V2')
                         
-                        # Track V2 persistence in pipeline
-                        try:
-                            signal_id = f"{signal_v2['ticker']}|{interval}|{signal_v2['timestamp']}|v2"
-                            get_tracker().mark_persisted(signal_id=signal_id)
-                        except Exception:
-                            pass  # Never let tracker crash signal flow
-                        
-                        # Log to signal_debug.log
-                        entry_data = ""
-                        if signal_v2.get('entry_price') is not None:
-                            entry_data = f" | Entry: {signal_v2['entry_price']:.5f} | SL: {signal_v2['stop_loss']:.5f} | TP: {signal_v2['take_profit']:.5f}"
-                        signal_logger.info(
-                            f"{symbol:10} | [V2] {signal_v2['signal_label']:8} | "
-                            f"Confidence: {signal_v2['confidence']:.1%}{entry_data}"
-                        )
+                        # Save to database
+                        if signal_v2['signal'] != 0:
+                            self.save_signal(signal_v2)
+                            
+                            # Track V2 persistence in pipeline
+                            try:
+                                signal_id = f"{signal_v2['ticker']}|{interval}|{signal_v2['timestamp']}|v2"
+                                get_tracker().mark_persisted(signal_id=signal_id)
+                            except Exception:
+                                pass  # Never let tracker crash signal flow
+                            
+                            # Log to signal_debug.log
+                            entry_data = ""
+                            if signal_v2.get('entry_price') is not None:
+                                entry_data = f" | Entry: {signal_v2['entry_price']:.5f} | SL: {signal_v2['stop_loss']:.5f} | TP: {signal_v2['take_profit']:.5f} | RR: {signal_v2['risk_reward']:.2f}"
+                            signal_logger.info(
+                                f"{symbol:10} | [V2] {signal_v2['signal_label']:8} | "
+                                f"Confidence: {signal_v2['confidence']:.1%}{entry_data}"
+                            )
+                elif Config.STRATEGY_EVAL_MODE == 'v1_first':
+                    signal_logger.debug(f"{symbol:10} | V2 SKIPPED (V1-first mode: V1 already signaled)")
             
             signals.extend(symbol_signals)
             

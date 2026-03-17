@@ -1,0 +1,23 @@
+SILENTANALYST V2 - STABLE STATE MANIFEST
+Timestamp: 2026-03-08T13:44:40.905130Z
+Git Branch: master
+Git Commit: 3c481157
+Git Tag: stable-v2-20260308_134435Z
+
+DEPLOYMENT SNAPSHOT:
+- All surgical fixes verified in place
+- Signal generation active and functional
+- Database initialized and operational
+- All scheduled jobs running
+- No error conditions
+
+KEY FILES:
+- core/strategy_core_v2.py (MODIFIED - surgical fixes)
+- core/multi_timeframe.py (MODIFIED - surgical fixes)
+- core/strategy_core_v2.py.backup (PRESERVED - original)
+- async_scheduler.py (RUNNING)
+- trading_bot.db (OPERATIONAL)
+
+BACKUP PRESERVED: YES
+ROLLBACK POSSIBLE: YES
+MONITORING ACTIVE: YES

@@ -2,8 +2,23 @@
 Tiingo API Fetcher - Async data retrieval with rate limiting
 """
 
+# ============================================================================
+# SYSTEM RULE - CORE FILE PROTECTION
+# ============================================================================
+# This file is CRITICAL INFRASTRUCTURE and must NEVER be replaced.
+# Only patch/modify existing logic.
+#
+# Replacing this file causes:
+#   - API rate limiting to fail
+#   - API deduplication to be bypassed
+#   - Duplicate API calls and rate limit bans
+#
+# Recovery: Always use git to restore or patch existing logic
+# ============================================================================
+
 import asyncio
 import aiohttp
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import pandas as pd
@@ -13,13 +28,15 @@ from pathlib import Path
 from core.config import Config
 from core.database import DatabaseManager
 
+logger = logging.getLogger(__name__)
+
 
 class RateLimiter:
     """Track API usage and enforce rate limits"""
     
     def __init__(self, db_manager: DatabaseManager):
         self.db = db_manager
-        self.conn = sqlite3.connect(Config.DB_PATH)
+        # Use DatabaseManager's shared connection instead of creating own
     
     def check_rate_limit(self) -> Tuple[bool, str]:
         """
@@ -28,7 +45,7 @@ class RateLimiter:
         Returns:
             (can_proceed, reason)
         """
-        cursor = self.conn.cursor()
+        cursor = self.db.conn.cursor()
         now = datetime.utcnow()
         
         # Check hourly limit
@@ -64,26 +81,19 @@ class RateLimiter:
         return True, "OK"
     
     def log_request(self, ticker: str, interval: str, success: bool, error_msg: Optional[str] = None):
-        """Log API request to database"""
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            INSERT INTO api_usage 
-            (timestamp, api_name, endpoint, ticker, interval, success, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.utcnow().isoformat(),
-            'tiingo',
-            Config.TIINGO_BASE_URL,
-            ticker,
-            interval,
-            1 if success else 0,
-            error_msg
-        ))
-        self.conn.commit()
+        """Log API request using DatabaseManager's shared connection"""
+        self.db.log_api_usage(
+            api_name='tiingo',
+            endpoint=Config.TIINGO_BASE_URL,
+            ticker=ticker,
+            interval=interval,
+            success=success,
+            error_msg=error_msg
+        )
     
     def get_usage_stats(self) -> Dict:
         """Get current usage statistics"""
-        cursor = self.conn.cursor()
+        cursor = self.db.conn.cursor()
         now = datetime.utcnow()
         
         # Hourly stats
@@ -110,10 +120,6 @@ class RateLimiter:
             'daily_limit': Config.TIINGO_MAX_DAILY_REQUESTS,
             'daily_remaining': Config.TIINGO_MAX_DAILY_REQUESTS - daily
         }
-    
-    def close(self):
-        """Close database connection"""
-        self.conn.close()
 
 
 class TiingoFetcher:
@@ -142,7 +148,7 @@ class TiingoFetcher:
         """Async context manager exit"""
         if self.session:
             await self.session.close()
-        self.rate_limiter.close()
+        # Note: RateLimiter doesn't need cleanup - it uses shared DB connection
     
     async def fetch_price(
         self, 
@@ -163,6 +169,12 @@ class TiingoFetcher:
         Returns:
             DataFrame with OHLCV data or None if failed
         """
+        # DEDUP CHECK: Skip if data was just fetched in the last 2 minutes
+        # Uses DatabaseManager's shared connection to avoid race conditions
+        if self.db.api_call_exists(ticker, interval):
+            print(f"⊘ {ticker} ({interval}): Already fetched - skipping duplicate")
+            return None
+        
         # Ensure session is initialized
         await self._ensure_session()
         
@@ -269,33 +281,31 @@ class TiingoFetcher:
             return None
     
     def _save_raw_data(self, df: pd.DataFrame, ticker: str, interval: str):
-        """Save raw OHLCV data to database"""
-        conn = sqlite3.connect(Config.DB_PATH)
-        cursor = conn.cursor()
+        """Save raw OHLCV data to database using shared connection"""
+        cursor = self.db.conn.cursor()
         
         for _, row in df.iterrows():
             try:
                 cursor.execute("""
-                    INSERT OR REPLACE INTO ohlcv_data 
-                    (symbol, timeframe, timestamp, open, high, low, close, volume, source)
+                    INSERT OR REPLACE INTO ohlcv_data
+                    (timestamp, symbol, timeframe, open, high, low, close, volume, source)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
+                    row['timestamp'].isoformat(),
                     ticker,
                     interval,
-                    row['timestamp'].isoformat(),
-                    row['open'],
-                    row['high'],
-                    row['low'],
-                    row['close'],
-                    row.get('volume', 0),
+                    float(row['open']),
+                    float(row['high']),
+                    float(row['low']),
+                    float(row['close']),
+                    float(row.get('volume', 0)),
                     'tiingo'
                 ))
             except Exception as e:
-                print(f"Error saving row: {e}")
-                continue
+                logger.error(f"Database write failure for {ticker}/{interval}: {e}")
+                raise
         
-        conn.commit()
-        conn.close()
+        self.db.conn.commit()
     
     async def fetch_batch(
         self, 
