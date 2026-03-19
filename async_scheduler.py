@@ -25,9 +25,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 import traceback
-import fcntl
-import sys
-import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -41,6 +38,7 @@ from data.tiingo_fetcher import TiingoFetcher
 from features.engine import FeatureEngine
 from models.xgb_trainer import XGBTrainer
 from signals.event_monitor import EventMonitor, EventMonitorConfig
+from signals.context_engine import ContextEngine
 from signals.xgb_signal_engine_ec2 import PureStrategyEngine
 from signals.v2_execution_engine import V2ExecutionEngine
 from signals.trade_signal import TradeSignal
@@ -146,26 +144,11 @@ class MLPipelineScheduler:
         Args:
             enable_telegram: Whether to send Telegram alerts
         """
-        # ══════════════════════════════════════════════════════════════════════
-        # SINGLE-INSTANCE LOCK — Prevent concurrent scheduler processes
-        # ══════════════════════════════════════════════════════════════════════
-        self._lock_file = open("/tmp/async_scheduler.lock", "w")
-        try:
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self._lock_file.write(str(os.getpid()))
-            self._lock_file.flush()
-            logger.info(f"✅ Single-instance lock acquired | PID={os.getpid()}")
-        except BlockingIOError:
-            logger.critical(
-                "❌ STARTUP BLOCKED: Another async_scheduler instance is already running. "
-                "Exiting to prevent duplicate signal generation."
-            )
-            sys.exit(1)
-
         # GUARDRAIL 3: DB PATH ASSERTION - Verify absolute path at startup
         logger.info("="*70)
         logger.info("🔐 DATABASE PATH VERIFICATION")
         logger.info(f"   Config DB_PATH: {Config.DB_PATH}")
+        import os
         if os.path.exists(Config.DB_PATH):
             db_size_mb = os.path.getsize(Config.DB_PATH) / (1024 * 1024)
             logger.info(f"   ✅ Database exists at absolute path: {Config.DB_PATH}")
@@ -204,6 +187,9 @@ class MLPipelineScheduler:
         self.event_monitor = EventMonitor(forex_event_config) if Config.EVENT_MODE_ENABLED else None
         self._event_symbol_cooldowns: Dict[str, datetime] = {}
         self._event_cooldown_window = timedelta(minutes=60)
+        
+        # Context Engine - Observation phase (reads context, doesn't filter signals yet)
+        self.context_engine = ContextEngine() if Config.CONTEXT_ENGINE_ENABLED else None
         
         # ============================================================================
         # EVENT DEDUPLICATION SYSTEM
@@ -931,7 +917,45 @@ class MLPipelineScheduler:
                 f"(age: {age_minutes:.0f} min < {max_age} min)"
             )
 
-            events = self.event_monitor.analyze(symbol, interval, df)
+            # ============================================================================
+            # STEP 1: FEATURE COMPUTATION - Enrich OHLCV with technical indicators
+            # ============================================================================
+            df_features = self.feature_engine.compute_all_features(df)
+            
+            # ============================================================================
+            # STEP 2: CONTEXT COMPUTATION - Market structure intelligence (Phase 1: Observation only)
+            # ============================================================================
+            context_state = None
+            if Config.CONTEXT_ENGINE_ENABLED and self.context_engine:
+                try:
+                    context_state = self.context_engine.compute_context(
+                        df_features, symbol, interval
+                    )
+                    
+                    # Persist context for 2-week observation phase
+                    if df_features is not None and not df_features.empty:
+                        timestamp_str = pd.Timestamp(df_features.index[-1]).isoformat()
+                        self.db.log_context(symbol, interval, timestamp_str, context_state)
+                    
+                    # Debug logging if enabled
+                    if Config.CONTEXT_ENGINE_DEBUG_LOG:
+                        logger.info(
+                            f"[CONTEXT] {symbol:8} {interval:4} | "
+                            f"Comp={context_state['compression_score']:5.2f} | "
+                            f"Press={context_state['expansion_pressure']:.2f} | "
+                            f"RSI={context_state['rsi_stage']:8} | "
+                            f"Sweep={str(context_state['liquidity_sweep']):5} | "
+                            f"Liq={context_state['liquidity_type']:12} "
+                            f"@ {context_state['nearest_liquidity']:.5f}"
+                        )
+                except Exception as e:
+                    logger.error(f"[CONTEXT] Failed for {symbol}-{interval}: {e}")
+                    context_state = None
+            
+            # ============================================================================
+            # STEP 3: EVENT DETECTION - Market structure event monitoring
+            # ============================================================================
+            events = self.event_monitor.analyze(symbol, interval, df_features)
 
             if not events:
                 continue
@@ -1615,11 +1639,11 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
 
         # Job 3: Event monitor sweep with fixed cron timing (not relative to service start)
         if Config.EVENT_MODE_ENABLED:
-            # 30m event monitor - every 15 minutes, 5 minutes AFTER fetch completes (:05, :20, :35, :50 UTC)
+            # 30m event monitor - at :05 and :35 UTC (2 times per hour instead of 4)
             # This prevents race condition where monitor runs before fetch data is written
             self.scheduler.add_job(
                 self.event_monitor_job,
-                trigger=CronTrigger(minute='5,20,35,50', timezone='UTC'),
+                trigger=CronTrigger(minute='5,35', timezone='UTC'),
                 args=['30m'],
                 id='event_monitor_30m',
                 name='Event Monitor Sweep (30m)',
@@ -1627,12 +1651,12 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
                 coalesce=True,
                 misfire_grace_time=120,
             )
-            logger.info(f"   ✅ Job registered: event_monitor_30m (every 15 min, race-safe: :05, :20, :35, :50 UTC)")
+            logger.info(f"   ✅ Job registered: event_monitor_30m (at :05 and :35 UTC)")
             
-            # 1h event monitor - every 30 minutes at :15 and :45 UTC (race-safe offset after 30m)
+            # 1h event monitor - every 60 minutes at :15 UTC (15 min after candle close for data arrival)
             self.scheduler.add_job(
                 self.event_monitor_job,
-                trigger=CronTrigger(minute='15,45', timezone='UTC'),
+                trigger=CronTrigger(minute='15', timezone='UTC'),
                 args=['1h'],
                 id='event_monitor_1h',
                 name='Event Monitor Sweep (1h)',
@@ -1640,12 +1664,12 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
                 coalesce=True,
                 misfire_grace_time=120,
             )
-            logger.info(f"   ✅ Job registered: event_monitor_1h (every 30 min at :15, :45 UTC - reduced from hourly)")
+            logger.info(f"   ✅ Job registered: event_monitor_1h (hourly at :15 UTC)")
             
-            # 4h event monitor - every hour, 5 minutes AFTER fetch completes (:05 UTC)
+            # 4h event monitor - every 4 hours at :10 UTC (safe offset from 1h monitor at :15 UTC)
             self.scheduler.add_job(
                 self.event_monitor_job,
-                trigger=CronTrigger(minute=5, timezone='UTC'),
+                trigger=CronTrigger(hour='0,4,8,12,16,20', minute='10', timezone='UTC'),
                 args=['4h'],
                 id='event_monitor_4h',
                 name='Event Monitor Sweep (4h)',
@@ -1653,7 +1677,7 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
                 coalesce=True,
                 misfire_grace_time=120,
             )
-            logger.info(f"   ✅ Job registered: event_monitor_4h (every hour at :05 UTC, race-safe offset)")
+            logger.info(f"   ✅ Job registered: event_monitor_4h (every 4h at :10 UTC)")
 
         # Job 4c: Time-based fallback DISABLED (March 1, 2026)
         # Pure event-driven architecture only - no time-based fallback signals

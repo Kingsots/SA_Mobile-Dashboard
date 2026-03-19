@@ -113,6 +113,11 @@ class PureStrategyEngine:
         self._recent_broadcasts: Dict[str, float] = {}
         self._broadcast_dedup_window = 30  # seconds
         
+        # Signal-level cooldown cache: prevents duplicate signals within 60-minute window (race-condition safe)
+        # Key: (ticker, interval, direction)
+        # Value: datetime of last signal broadcast
+        self._signal_cooldown: Dict[Tuple[str, str, int], datetime] = {}
+        
         # Initialize Telegram for alerts
         try:
             self.telegram_bot = TelegramBot()
@@ -132,8 +137,9 @@ class PureStrategyEngine:
     
     def _is_duplicate_trade(self, ticker: str, interval: str, direction: int, entry_price: float) -> bool:
         """
-        Check if an active trade with identical signature already exists in database.
-        Prevents V1/V2 dual-strategy broadcast spam until trade is closed.
+        Check if an identical signal exists within 60 minutes.
+        First checks in-memory cooldown (race-safe), then queries ml_signals for definitive check.
+        Prevents V1/V2 dual-strategy broadcast spam.
         
         Signature: {ticker}-{interval}-{direction}-{entry_price}
         
@@ -144,46 +150,59 @@ class PureStrategyEngine:
             entry_price: Entry price to check
             
         Returns:
-            True if active trade with same signature exists, False otherwise
+            True if recent duplicate signal exists, False otherwise
         """
         # Master toggle
         if not Config.ENABLE_DUPLICATE_PREVENTION:
             return False
         
         try:
+            # IN-MEMORY COOLDOWN CHECK (first-line defense, race-safe)
+            cooldown_key = (ticker, interval, direction)
+            last_sent = self._signal_cooldown.get(cooldown_key)
+            if last_sent is not None:
+                seconds_since = (datetime.utcnow() - last_sent).total_seconds()
+                if seconds_since < 3600:  # 60-minute cooldown matches DB window
+                    logging.info(
+                        f"[COOLDOWN] {ticker} {interval} dir={direction} "
+                        f"blocked by in-memory cooldown ({int(seconds_since)}s since last signal)"
+                    )
+                    return True  # Block — treat as duplicate
+            
+            # DATABASE DEDUP CHECK (definitive check against ml_signals history)
             direction_text = 'BUY' if direction == 1 else 'SELL'
             trade_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
             
-            # Query for active trades with this exact signature
+            # Query for identical signals within 60-minute window
+            price_tolerance = entry_price * 0.005  # 0.5% tolerance for floating point comparison
             query = """
-                SELECT COUNT(*) FROM trades 
-                WHERE symbol = %s 
-                AND interval = %s 
-                AND direction = %s 
-                AND entry_price >= %s AND entry_price <= %s
-                AND status IN ('active', 'pending')
+                SELECT COUNT(*) FROM ml_signals
+                WHERE ticker = ?
+                AND interval = ?
+                AND signal = ?
+                AND timestamp > datetime('now', '-60 minutes')
+                AND entry_price BETWEEN ? AND ?
+                AND broadcasted = 1
+                LIMIT 1
             """
-            
-            # Allow 0.0001 price tolerance for floating point comparison
-            price_tolerance = 0.0001
             
             result = self.db.fetch_one(query, [
                 ticker,
                 interval,
-                direction_text,
+                direction,
                 entry_price - price_tolerance,
                 entry_price + price_tolerance
             ])
             
             if result and result[0] > 0:
                 logging.warning(
-                    f"[DUPLICATE_PREVENTION] Trade still active: {trade_key} | "
+                    f"[DUPLICATE_PREVENTION] Signal duplicate detected: {trade_key} | "
                     f"BLOCKING DUPLICATE BROADCAST"
                 )
                 return True
             
+            # Signal passed dedup — do NOT update cooldown here
             return False
-        
         except Exception as e:
             logging.error(f"[DUPLICATE_PREVENTION] Database check failed: {e} | Allowing broadcast")
             return False  # On error, allow broadcast rather than block
@@ -204,7 +223,7 @@ class PureStrategyEngine:
             entry_price: Entry price
             
         Returns:
-            True if broadcast within 30 seconds, False otherwise
+            True if recent broadcast exists, False otherwise
         """
         direction_text = 'BUY' if direction == 1 else 'SELL'
         broadcast_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
@@ -243,12 +262,13 @@ class PureStrategyEngine:
         now = datetime.now(timezone.utc).timestamp()
         self._recent_broadcasts[broadcast_key] = now
 
-    def broadcast_trade_signal(self, signal_data: Dict[str, Any]) -> None:
+    def broadcast_trade_signal(self, signal_data: Dict[str, Any], signal_id: int = None) -> None:
         """
-        Send constructed trade signal to Telegram alerts.
+        Send constructed trade signal to Telegram alerts and mark as broadcasted in DB.
         
         Args:
             signal_data: Complete signal dict with trade construction fields
+            signal_id: Database signal ID (for marking as broadcasted)
         """
         if not signal_data:
             logging.debug("broadcast_trade_signal: No signal_data provided")
@@ -308,8 +328,19 @@ Status: Active in Database
             success = self.telegram_bot.send_message(alert_msg.strip())
             if success:
                 logging.info(f"✅ Telegram broadcast sent for {ticker}-{interval} {direction_text}")
+                # Send to observation channel
+                self.telegram_bot.send_to_observation_channel(alert_msg.strip())
                 # Record this broadcast to dedup future attempts
                 self._record_broadcast(ticker, interval, direction, entry)
+                # Mark signal as broadcasted in database
+                if signal_id:
+                    try:
+                        self.db.mark_signal_broadcasted(signal_id)
+                        logging.info(f"✅ Marked signal_id={signal_id} as broadcasted")
+                    except Exception as e:
+                        logging.error(f"Failed to mark signal {signal_id} as broadcasted: {e}")
+                cooldown_key = (ticker, interval, direction)
+                self._signal_cooldown[cooldown_key] = datetime.utcnow()
             else:
                 logging.error(f"❌ Telegram send failed for {ticker}-{interval} {direction_text} - check bot credentials")
         
@@ -550,13 +581,13 @@ Status: Active in Database
 
             # STEP 6: SAVE TO DATABASE (persist trade first)
             logging.info(f"[PIPELINE_EXECUTION] LOG 7: Inserting signal into database | trade_id={trade_signal.trade_id}")
-            saved = self.db.save_trade(signal_data)
-            if not saved:
+            signal_id = self.db.save_trade(signal_data)
+            if not signal_id:
                 logging.error(f"[PIPELINE_EXECUTION] LOG 7 FAILED: Database save returned False for {ticker}-{interval} trade_id={trade_signal.trade_id}")
                 logging.warning(f'Failed to save trade {ticker}-{interval}')
                 return None
 
-            logging.info(f"[PIPELINE_EXECUTION] LOG 7 SUCCESS: Trade persisted to database | trade_id={trade_signal.trade_id}")
+            logging.info(f"[PIPELINE_EXECUTION] LOG 7 SUCCESS: Trade persisted to database | trade_id={trade_signal.trade_id} | signal_id={signal_id}")
 
             # STEP 7: BROADCAST TO TELEGRAM (only after persistence)
             # CHECK FOR DUPLICATION: Prevent V1/V2 spam (same entry price within 5 min)
@@ -576,7 +607,7 @@ Status: Active in Database
                 return signal_data  # Still return signal_data (persisted), but don't broadcast
             
             logging.info(f"[PIPELINE_EXECUTION] LOG 8: Calling broadcast_trade_signal() | trade_id={trade_signal.trade_id} | {ticker}-{interval}")
-            self.broadcast_trade_signal(signal_data)
+            self.broadcast_trade_signal(signal_data, signal_id)
             logging.info(f"[PIPELINE_EXECUTION] LOG 8 COMPLETE: Telegram broadcast attempted | trade_id={trade_signal.trade_id}")
 
             return signal_data

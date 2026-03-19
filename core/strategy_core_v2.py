@@ -26,7 +26,6 @@ import numpy as np
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-# Lazy import: log_stage_transition imported at call site
 from enum import IntEnum
 
 logger = logging.getLogger(__name__)
@@ -138,7 +137,7 @@ def get_timeframe_config(interval: str) -> TimeframeConfig:
             rsi_extreme_bear  = 65,
             rsi_bull_break    = 45,
             rsi_bear_break    = 55,
-            rsi_retest_buffer = 1.5,        # Widened from 1.0 to improve Stage 1C conversion
+            rsi_retest_buffer = 1.0,
             rsi_retest_bars   = 5,
             rsi_extreme_reset = 50,
             entry_window_bars = 8,
@@ -491,7 +490,7 @@ def _get_daily_alignment(
     and silently disabled the most important filter in the system.
     """
     try:
-        df_daily = df.resample('4H').agg({
+        df_daily = df.resample('D').agg({
             'open':  'first',
             'high':  'max',
             'low':   'min',
@@ -870,7 +869,6 @@ class SignalEngine:
         self._last_confirmation_result: Optional[ConfirmationResult] = None
 
     def evaluate(self, df_ohlcv: pd.DataFrame) -> Signal:
-        from async_scheduler import log_stage_transition
         """
         Evaluate the latest bar and return signal.
 
@@ -1021,6 +1019,10 @@ class SignalEngine:
         updated_state = self.state.to_dict()
         if latest_bar_time:
             updated_state['last_processed_bar_time'] = latest_bar_time.isoformat()
+        elif len(df) > 0 and not updated_state.get('last_processed_bar_time'):
+            # Fallback: loop did not run AND field is empty
+            # Set to last bar in DataFrame to prevent full reprocess next cycle
+            updated_state['last_processed_bar_time'] = df.index[-1].isoformat()
 
         logger.debug(f"[V2_ADVANCE] {self.ticker}-{self.interval}: Processed bars {start_idx}-{len(df)-1}, signal={last_signal.name}, stage={self.state.stage_description}")
 
@@ -1049,17 +1051,11 @@ class SignalEngine:
 
         if rsi_val <= cfg.rsi_extreme_bull:
             s.bull_extreme_visited = True
-            try:
-                log_stage_transition(self.ticker, self.interval, "BULL", "NEUTRAL", "1A", bar_idx, None, float(rsi_val), notes="Extreme visited")
-            except Exception: pass
             s.bear_extreme_visited = False
             s.extreme_bar          = bar_idx
 
         if rsi_val >= cfg.rsi_extreme_bear:
             s.bear_extreme_visited = True
-            try:
-                log_stage_transition(self.ticker, self.interval, "BEAR", "NEUTRAL", "1A", bar_idx, None, float(rsi_val), notes="Extreme visited")
-            except Exception: pass
             s.bull_extreme_visited = False
             s.extreme_bar          = bar_idx
 
@@ -1077,17 +1073,11 @@ class SignalEngine:
 
         if rsi_bull_break:
             s.bull_break_bar       = bar_idx
-            try:
-                log_stage_transition(self.ticker, self.interval, "BULL", "1A", "1B", bar_idx, None, float(rsi_val), notes="RSI break")
-            except Exception: pass
             s.bull_extreme_visited = False
             s.reset_bear()
 
         if rsi_bear_break:
             s.bear_break_bar       = bar_idx
-            try:
-                log_stage_transition(self.ticker, self.interval, "BEAR", "1A", "1B", bar_idx, None, float(rsi_val), notes="RSI break")
-            except Exception: pass
             s.bear_extreme_visited = False
             s.reset_bull()
 
@@ -1109,18 +1099,12 @@ class SignalEngine:
 
         if bull_retest_active and not s.bull_retest_done:
             s.bull_retest_done      = True
-            try:
-                log_stage_transition(self.ticker, self.interval, "BULL", "1B", "1C", bar_idx, None, float(rsi_val), notes="Retest confirmed")
-            except Exception: pass
             s.bull_retest_bar       = bar_idx
             s.bull_entry_window_bar = bar_idx
             s.bull_entry_armed      = True
 
         if bear_retest_active and not s.bear_retest_done:
             s.bear_retest_done      = True
-            try:
-                log_stage_transition(self.ticker, self.interval, "BEAR", "1B", "1C", bar_idx, None, float(rsi_val), notes="Retest confirmed")
-            except Exception: pass
             s.bear_retest_bar       = bar_idx
             s.bear_entry_window_bar = bar_idx
             s.bear_entry_armed      = True

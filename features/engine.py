@@ -12,40 +12,6 @@ from core.config import Config
 from core.database import DatabaseManager
 from core.indicators import TechnicalIndicators
 
-# ==========================================
-# FEATURE SETS (PREVENT LEAKAGE)
-# ==========================================
-
-# Price features (open/high/low/close) excluded from ML to prevent circular prediction
-# VWAP excluded because it incorporates current bar close in calculation
-# Only indicators and derivatives (slopes, ratios) are safe for prediction
-ML_FEATURE_COLUMNS = [
-    'ema_21', 'ema_100', 'rsi_14',
-    'volume_sma_20', 'volume_ratio',
-    'obv', 'ad', 'vwap_slope'  # vwap removed, only slope kept
-]
-
-# All features kept in database (OHLC needed for ATR calculations)
-DATABASE_COLUMNS = [
-    'open', 'high', 'low', 'close', 'volume',
-    'ema_21', 'ema_100', 'rsi_14',
-    'volume_sma_20', 'volume_ratio',
-    'obv', 'ad', 'vwap', 'vwap_slope'
-]
-
-def compute_daily_ema(df, timestamp_col='timestamp', price_col='close', period=100):
-    import pandas as pd
-    temp = df.copy()
-    temp[timestamp_col] = pd.to_datetime(temp[timestamp_col])
-    temp = temp.set_index(timestamp_col)
-    daily = temp[price_col].resample('D').last().dropna()
-    daily_ema = daily.ewm(span=period, adjust=False).mean().rename('daily_ema')
-    daily_ema_df = daily_ema.to_frame()
-    daily_ema_df['date'] = daily_ema_df.index.date
-    df['date'] = pd.to_datetime(df[timestamp_col]).dt.date
-    df = df.merge(daily_ema_df[['daily_ema', 'date']], on='date', how='left')
-    df = df.drop(columns=['date'])
-    return df
 
 class FeatureEngine:
     """
@@ -58,6 +24,29 @@ class FeatureEngine:
     
     def __init__(self):
         self.db = DatabaseManager()
+    
+    def _calculate_rsi_series(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        """
+        Calculate RSI as a pandas Series for vectorized operations
+        
+        Args:
+            prices: Series of closing prices
+            period: RSI period (default: 14)
+            
+        Returns:
+            Series with RSI values
+        """
+        delta = prices.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = (-delta.where(delta < 0, 0))
+        
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi.fillna(50.0)  # Fill NaN with neutral value
     
     def compute_obv(self, df: pd.DataFrame) -> pd.Series:
         """
@@ -119,6 +108,8 @@ class FeatureEngine:
         Typical Price = (high + low + close) / 3
         VWAP = cumsum(typical_price * volume) / cumsum(volume)
         
+        For instruments with zero volume (forex), returns typical price instead.
+        
         Args:
             df: DataFrame with OHLCV columns
             
@@ -131,11 +122,16 @@ class FeatureEngine:
         # Calculate typical price
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         
-        # VWAP = cumulative (price * volume) / cumulative volume
-        vwap = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+        # Check if volume data exists
+        if df['volume'].sum() == 0:
+            # For forex (no volume), use typical price as proxy
+            return typical_price
         
-        # Replace inf/-inf with NaN for safety
-        vwap = vwap.replace([np.inf, -np.inf], np.nan)
+        # VWAP = cumulative (price * volume) / cumulative volume
+        cum_volume = df['volume'].cumsum()
+        cum_volume = cum_volume.replace(0, np.nan)  # Avoid division by zero
+        vwap = (typical_price * df['volume']).cumsum() / cum_volume
+        vwap = vwap.fillna(typical_price)  # Fill NaN with typical price
         
         return vwap
     
@@ -159,9 +155,49 @@ class FeatureEngine:
         
         return vwap_slope
     
+    def compute_atr_series(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """
+        Compute Average True Range (ATR) as a Series
+        
+        Used by Context Engine for compression/expansion analysis.
+        
+        Args:
+            df: DataFrame with 'high', 'low', 'close' columns
+            period: ATR period (default: 14)
+        
+        Returns:
+            Series with ATR values
+        """
+        if df is None or df.empty:
+            return pd.Series()
+        
+        try:
+            high = df['high']
+            low = df['low']
+            close = df['close']
+            
+            # Calculate True Range components
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            
+            # True Range is the maximum of the three
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            
+            # ATR is the moving average of True Range
+            atr = tr.rolling(window=period).mean()
+            
+            return atr.fillna(0.0)
+            
+        except Exception as e:
+            print(f"ATR series calculation error: {e}")
+            return pd.Series(0.0, index=df.index)
+    
     def compute_volume_features(self, df: pd.DataFrame, period: int = 20) -> Dict[str, pd.Series]:
         """
         Compute volume-based features
+        
+        For instruments with zero volume (forex), returns normalized placeholder values.
         
         Args:
             df: DataFrame with 'volume' column
@@ -173,8 +209,19 @@ class FeatureEngine:
         if df is None or df.empty:
             return {'volume_sma': pd.Series(), 'volume_ratio': pd.Series()}
         
+        # Check if volume data exists
+        if df['volume'].sum() == 0:
+            # For forex (no volume), return placeholder values
+            return {
+                'volume_sma': pd.Series([1.0] * len(df), index=df.index),
+                'volume_ratio': pd.Series([1.0] * len(df), index=df.index)
+            }
+        
         volume_sma = df['volume'].rolling(window=period).mean()
-        volume_ratio = df['volume'] / volume_sma
+        # Avoid division by zero
+        volume_sma_safe = volume_sma.replace(0, np.nan)
+        volume_ratio = df['volume'] / volume_sma_safe
+        volume_ratio = volume_ratio.fillna(1.0)  # Fill NaN with neutral value
         
         return {
             'volume_sma': volume_sma,
@@ -189,33 +236,29 @@ class FeatureEngine:
             df: DataFrame with OHLCV data (index must be datetime)
             
         Returns:
-            DataFrame with all features added
+            DataFrame with all features added (all numeric types, no NaN in critical columns)
         """
         if df is None or df.empty:
             return df
         
         # Make a copy to avoid modifying original
         df = df.copy()
-
-        # Ensure downstream indicators have explicit timestamp column
-        if 'timestamp' not in df.columns:
-            df['timestamp'] = df.index
         
         # ==========================================
         # EXISTING FEATURES
         # ==========================================
         
         # EMAs
-        df['ema_21'] = df['close'].shift(1).ewm(span=Config.EMA_LTF, adjust=False).mean()
-        df['ema_100'] = df['close'].shift(1).ewm(span=Config.EMA_HTF, adjust=False).mean()
+        df['ema_21'] = df['close'].ewm(span=Config.EMA_LTF, adjust=False).mean()
+        df['ema_100'] = df['close'].ewm(span=Config.EMA_HTF, adjust=False).mean()
         
         # RSI
-        df['rsi_14'] = TechnicalIndicators.calculate_rsi(df['close'], Config.RSI_PERIOD)
+        df['rsi_14'] = self._calculate_rsi_series(df['close'], Config.RSI_PERIOD)
         
-        # Volume features (safe division)
-        df['volume_sma_20'] = df['volume'].shift(1).rolling(window=Config.VOLUME_PERIOD, min_periods=1).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_sma_20'].replace(0, np.nan)
-        df['volume_ratio'] = df['volume_ratio'].fillna(1.0)  # Default to 1.0 instead of 0
+        # Volume features
+        volume_features = self.compute_volume_features(df, Config.VOLUME_PERIOD)
+        df['volume_sma_20'] = volume_features['volume_sma']
+        df['volume_ratio'] = volume_features['volume_ratio']
         
         # ==========================================
         # NEW FEATURES (ML Pipeline)
@@ -227,45 +270,27 @@ class FeatureEngine:
         # A/D Line
         df['ad'] = self.compute_ad(df)
         
-        # --- Patch 5: VWAP based ONLY on past bars ---
-        typ_price = (df['high'] + df['low'] + df['close']) / 3
-        vwap_num = ((typ_price * df['volume']).shift(1)).cumsum()
-        vwap_den = (df['volume'].shift(1)).cumsum().replace(0, 1)
-        df['vwap'] = vwap_num / vwap_den
-        df = df.dropna(subset=['vwap'])
-        df['vwap'] = df['vwap'].replace([np.inf, -np.inf], np.nan)
+        # VWAP
+        df['vwap'] = self.compute_vwap(df)
         
-        # VWAP Slope (rate of change over 5 periods)
-        df['vwap_slope'] = df['vwap'].pct_change(periods=5).fillna(0)
+        # VWAP Slope
+        df['vwap_slope'] = self.compute_vwap_slope(df, periods=5)
         
-        df = compute_daily_ema(df)
+        # ATR for Context Engine (compression/expansion analysis)
+        df['atr_14'] = self.compute_atr_series(df, period=14)
+        df['atr_sma_20'] = df['atr_14'].rolling(window=20).mean()
         
-        # Coerce all feature columns to numeric, replacing any non-numeric with NaN
-        feature_cols = ['open', 'high', 'low', 'close', 'volume', 'ema_21', 'ema_100', 'rsi_14',
-                        'obv', 'ad', 'vwap', 'vwap_slope', 'volume_sma_20', 'volume_ratio']
+        # ==========================================
+        # NUMERIC COERCION - Ensure all features are float64
+        # ==========================================
+        feature_cols = [
+            'ema_21', 'ema_100', 'rsi_14', 'obv', 'ad', 'vwap', 
+            'vwap_slope', 'volume_sma_20', 'volume_ratio', 'atr_14', 'atr_sma_20'
+        ]
+        
         for col in feature_cols:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # ==========================================
-        # LAG FEATURES BY 1 BAR (CRITICAL FOR ML)
-        # ==========================================
-        # Trading reality: At close of bar N, we only know bars 0 through N-1
-        # We predict bar N+1 using only data from bar N-1 and earlier
-        # Using bar N data to predict bar N+1 is lookahead bias
-        
-        for col in ML_FEATURE_COLUMNS:
-            if col in df.columns:
-                df[f'{col}_lag1'] = df[col].shift(1)
-        
-        # Drop rows with NaN from lagging (first row after lag)
-        # This is safe because we still have plenty of training data
-        df = df.dropna(subset=[f'{col}_lag1' for col in ML_FEATURE_COLUMNS])
-
-        # Restore timestamp index for downstream consumers
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df = df.set_index('timestamp')
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype(np.float64)
         
         return df
     
@@ -293,8 +318,8 @@ class FeatureEngine:
         # Compute all features
         df_features = self.compute_all_features(df)
         
-        # Drop rows only where OHLCV (required columns) are NaN, allow indicator NaN for warmup
-        df_features = df_features.dropna(subset=['open', 'high', 'low', 'close', 'volume'])
+        # Drop rows with NaN (from indicators needing warmup)
+        df_features = df_features.dropna()
         
         if df_features.empty:
             print(f"   ⚠️  No valid features after dropna for {ticker} ({interval})")
@@ -307,8 +332,6 @@ class FeatureEngine:
     def save_features_to_db(self, ticker: str, interval: str, df_features: pd.DataFrame):
         """
         Save computed features to database
-        
-        Saves both original features (for indicators/ATR) and lagged features (for ML).
         
         Args:
             ticker: Trading symbol
@@ -323,7 +346,6 @@ class FeatureEngine:
         saved_count = 0
         
         for timestamp, row in df_features.iterrows():
-            # Save all database features (OHLC + indicators)
             features = {
                 'open': row['open'],
                 'high': row['high'],
@@ -340,12 +362,6 @@ class FeatureEngine:
                 'volume_sma_20': row['volume_sma_20'],
                 'volume_ratio': row['volume_ratio']
             }
-            
-            # Also save lagged features for ML if they exist
-            for col in ML_FEATURE_COLUMNS:
-                lagged_col = f'{col}_lag1'
-                if lagged_col in row.index:
-                    features[lagged_col] = row[lagged_col]
             
             self.db.save_features(
                 ticker=ticker,

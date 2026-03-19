@@ -162,6 +162,7 @@ class Config:
     
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+    OBSERVATION_CHANNEL_ID = -1003717292831  # Private observation/debug channel for signal review
     
     # ==========================================
     # ALERT SETTINGS
@@ -205,7 +206,7 @@ class Config:
     # ==========================================
     
     # Tiingo API Configuration
-    TIINGO_API_TOKEN = os.getenv('TIINGO_API_TOKEN', 'e22a2ad1ff0cd51d1f174d04dd1e891dd0652694')
+    TIINGO_API_TOKEN = os.getenv('TIINGO_API_TOKEN', '1cbde635c83f2f42b845debbd529730e50f6c22f')
     TIINGO_BASE_URL = 'https://api.tiingo.com/tiingo/fx'
     
     # Tiingo Ticker Mapping (15 assets)
@@ -297,7 +298,7 @@ class Config:
     # Duplicate Trade Prevention
     # Prevents same signal from V1 and V2 being broadcast twice
     # Tracks by database: if active trade with same symbol/interval/direction/entry_price exists, blocks duplicate
-    ENABLE_DUPLICATE_PREVENTION = True    # Master toggle for deduplication
+    ENABLE_DUPLICATE_PREVENTION = True    # Master toggle for deduplication - RE-ENABLED
     
     # Data Source Priority
     DATA_SOURCE_PRIORITY = ['tiingo', 'csv', 'yahoo']  # Try in this order
@@ -355,6 +356,15 @@ class Config:
     LOG_LEVEL = "INFO"
     LOG_FILE = "opticore_bot.log"
     LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    
+    # ==========================================
+    # CONTEXT ENGINE SETTINGS
+    # ==========================================
+    
+    # Phase 1: Observation only (compute context, log to database, no filtering)
+    CONTEXT_ENGINE_ENABLED = True              # Enable context computation
+    CONTEXT_ENGINE_FILTER_ENABLED = False      # MUST stay False until 2-week observation completes
+    CONTEXT_ENGINE_DEBUG_LOG = True            # Debug log context state to event_debug.log
     
     # ==========================================
     # DISPLAY SETTINGS

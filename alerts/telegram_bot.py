@@ -33,12 +33,7 @@ class TelegramBot:
         self.token = token or Config.TELEGRAM_BOT_TOKEN
         self.chat_id = chat_id or Config.TELEGRAM_CHAT_ID
         
-        feature_flag = getattr(Config, 'TELEGRAM_NOTIFICATIONS_ENABLED', True)
-
-        if not feature_flag:
-            logger.info("Telegram notifications disabled via config; skipping initialization")
-            self.enabled = False
-        elif not self.token or not self.chat_id:
+        if not self.token or not self.chat_id:
             logger.error("Telegram credentials not configured!")
             logger.error("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env file")
             self.enabled = False
@@ -46,19 +41,19 @@ class TelegramBot:
             self.enabled = True
             logger.info("Telegram bot initialized")
     
-    def send_message(self, message: str, parse_mode: str = 'HTML') -> bool:
+    def send_message(self, message: str, parse_mode: str = 'Markdown') -> bool:
         """
         Send a message to Telegram
         
         Args:
-            message: Message text (supports HTML formatting)
+            message: Message text (supports Markdown formatting)
             parse_mode: Parse mode ('Markdown' or 'HTML')
         
         Returns:
             True if sent successfully, False otherwise
         """
         if not self.enabled:
-            logger.debug("Telegram messaging skipped (disabled)")
+            logger.warning("Telegram bot not enabled. Check credentials.")
             return False
         
         try:
@@ -175,3 +170,47 @@ Bot is ready to send trading alerts.
         """
         message = AlertFormatter.format_summary(summary_data)
         return self.send_message(message)
+    
+    def send_to_observation_channel(self, message: str, parse_mode: str = 'HTML') -> bool:
+        """
+        Send message to observation/debug channel
+        
+        Args:
+            message: Message text
+            parse_mode: Parse mode ('HTML' or 'Markdown')
+        
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        obs_channel_id = getattr(Config, 'OBSERVATION_CHANNEL_ID', None)
+        
+        if not obs_channel_id:
+            logger.debug("Observation channel not configured, skipping")
+            return False
+        
+        if not self.enabled:
+            logger.warning("Telegram bot not enabled")
+            return False
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+            
+            payload = {
+                'chat_id': obs_channel_id,
+                'text': message,
+                'parse_mode': parse_mode,
+                'disable_web_page_preview': True
+            }
+            
+            response = requests.post(url, json=payload, timeout=10)
+            
+            if response.status_code == 200:
+                logger.info("OK - Observation channel sent")
+                return True
+            else:
+                logger.error(f"Observation channel error: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to send to observation channel: {e}")
+            return False

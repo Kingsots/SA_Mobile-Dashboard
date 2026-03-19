@@ -58,29 +58,7 @@ class DatabaseManager:
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.init_database()
-
-    def fetch_one(self, query: str, params: list = None):
-        """
-        Execute a query and return the first row result
-        
-        Args:
-            query: SQL query string
-            params: Query parameters (list)
-        
-        Returns:
-            First row as tuple, or None if no results
-        """
-        try:
-            cursor = self.conn.cursor()
-            if params:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            return cursor.fetchone()
-        except Exception as e:
-            logging.error(f"Error in fetch_one: {e}")
-            return None
-
+    
     def init_database(self):
         """Initialize database with unified schema"""
         conn = sqlite3.connect(self.db_path)
@@ -277,30 +255,6 @@ class DatabaseManager:
                     period_end TEXT NOT NULL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-                ''',
-                '''
-                CREATE TABLE IF NOT EXISTS context_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ticker TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    compression_score REAL,
-                    expansion_pressure REAL,
-                    rsi_stage TEXT,
-                    nearest_liquidity REAL,
-                    liquidity_type TEXT,
-                    distance_to_liquidity REAL,
-                    liquidity_sweep INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-                ''',
-                '''
-                CREATE INDEX IF NOT EXISTS idx_context_ticker_interval 
-                ON context_log(ticker, interval)
-                ''',
-                '''
-                CREATE INDEX IF NOT EXISTS idx_context_timestamp 
-                ON context_log(timestamp)
                 ''',
             ]
 
@@ -1110,7 +1064,7 @@ class DatabaseManager:
             
             cursor.execute(
                 '''
-            INSERT INTO ml_signals 
+            INSERT OR IGNORE INTO ml_signals 
             (timestamp, ticker, interval, signal, confidence, feature_snapshot, model_version, 
              triggered_by, strategy_version, trade_id, entry_price, stop_loss, take_profit, 
              risk_reward, entry_type, signal_candle_time, expiry_timestamp, expiry_candles)
@@ -1137,9 +1091,8 @@ class DatabaseManager:
                     expiry_candles,
                 ),
             )
-            signal_id = cursor.lastrowid
             conn.commit()
-            return signal_id  # Return signal_id instead of True
+            return True
         except Exception as e:
             print(f"❌ Error saving ML signal: {e}")
             return False
@@ -1648,7 +1601,7 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def save_trade(self, trade_data: Dict):
+    def save_trade(self, trade_data: Dict) -> bool:
         """
         Save trade data to ml_signals table
         
@@ -1656,7 +1609,7 @@ class DatabaseManager:
             trade_data: Dictionary with trade information (ticker, signal, entry_price, etc.)
             
         Returns:
-            signal_id (int) if saved successfully, False otherwise
+            True if saved successfully, False otherwise
         """
         if not trade_data or 'ticker' not in trade_data:
             return False
@@ -1685,27 +1638,6 @@ class DatabaseManager:
             logging.error(f"Error saving trade: {e}")
             return False
 
-    def mark_signal_broadcasted(self, signal_id: int) -> bool:
-        """
-        Mark a signal as successfully broadcast to Telegram
-        
-        Args:
-            signal_id: ID of the ml_signals row to mark as broadcasted
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            with self.conn:
-                self.conn.execute(
-                    "UPDATE ml_signals SET broadcasted = 1 WHERE id = ?",
-                    (signal_id,)
-                )
-            return True
-        except Exception as e:
-            logging.error(f"Failed to mark signal broadcasted: {e}")
-            return False
-
     def get_processed_events_count(self) -> int:
         """
         Get count of currently valid (non-expired) processed events
@@ -1729,53 +1661,6 @@ class DatabaseManager:
         except Exception as e:
             print(f"❌ Error getting processed events count: {e}")
             return 0
-        finally:
-            conn.close()
-
-    def log_context(self, ticker: str, interval: str, timestamp: str, context_state: Dict) -> bool:
-        """
-        Log context engine state to database for observation phase
-        
-        Called once per bar after context_engine.compute_context()
-        Logs even if context doesn't trigger signals (observation phase)
-        
-        Args:
-            ticker: Trading symbol
-            interval: Timeframe
-            timestamp: ISO datetime string
-            context_state: Dict from context_engine.compute_context() with 7 fields
-        
-        Returns:
-            True if logged successfully, False otherwise
-        """
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-            INSERT INTO context_log 
-            (ticker, interval, timestamp, compression_score, expansion_pressure, 
-             rsi_stage, nearest_liquidity, liquidity_type, distance_to_liquidity, liquidity_sweep)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                ticker,
-                interval,
-                timestamp,
-                context_state.get('compression_score', 0.0),
-                context_state.get('expansion_pressure', 0.0),
-                context_state.get('rsi_stage', 'NEUTRAL'),
-                context_state.get('nearest_liquidity', 0.0),
-                context_state.get('liquidity_type', 'none'),
-                context_state.get('distance_to_liquidity', 0.0),
-                1 if context_state.get('liquidity_sweep', False) else 0
-            ))
-            
-            conn.commit()
-            return True
-            
-        except Exception as e:
-            logging.error(f"[CONTEXT] Failed to log context for {ticker}-{interval}: {e}")
-            return False
         finally:
             conn.close()
 
