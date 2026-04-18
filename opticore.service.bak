@@ -1,0 +1,21 @@
+[Unit]
+Description=OptiCore ML Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/SilentAnalyst
+Environment=PATH=/home/ubuntu/SilentAnalyst/venv/bin:/usr/bin:/bin
+Environment=TIINGO_API_TOKEN=721e7de39daa4eaf3f119bbbee55ba64a8d700eb
+ExecStart=/home/ubuntu/SilentAnalyst/venv/bin/python /home/ubuntu/SilentAnalyst/async_scheduler.py
+Restart=on-failure
+RestartSec=15
+StartLimitInterval=600
+StartLimitBurst=3
+RuntimeMaxSec=120h
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -527,10 +527,6 @@ class PureStrategyEngine:
             # STEP 1: BUILD TRADE SIGNAL (Entry, SL, TP calculation)
             # ═══════════════════════════════════════════════════════════════════════
             logging.info(f"[PIPELINE_EXECUTION] LOG 3: Starting entry/SL/TP calculation via build_trade_signal()")
-            
-            # Extract metadata values if present
-            signal_bar_index = metadata.get('signal_bar_index') if metadata else None
-            
             trade_signal = build_trade_signal(
                 ticker=ticker,
                 interval=interval,
@@ -538,7 +534,6 @@ class PureStrategyEngine:
                 direction=direction,
                 strategy_name=strategy_name,
                 confidence=confidence,
-                signal_bar_index=signal_bar_index,
             )
             
             if trade_signal is None:
@@ -1224,7 +1219,7 @@ class PureStrategyEngine:
                 
                 if df_ohlcv is not None and len(df_ohlcv) >= 120:
                     # Advance state through new bars
-                    core_signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    core_signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df_ohlcv,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None

@@ -1224,7 +1224,7 @@ class PureStrategyEngine:
                 
                 if df_ohlcv is not None and len(df_ohlcv) >= 120:
                     # Advance state through new bars
-                    core_signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    core_signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df_ohlcv,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None

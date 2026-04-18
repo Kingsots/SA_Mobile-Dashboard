@@ -218,9 +218,6 @@ class SequenceState:
     bull_entry_window_bar: Optional[int] = None
     bear_entry_window_bar: Optional[int] = None
 
-    # Track which bar triggered the signal
-    last_signal_bar_index: Optional[int] = None
-
     def reset_bull(self):
         """Full bull setup reset - back to scanning."""
         self.bull_extreme_visited  = False
@@ -929,7 +926,7 @@ class SignalEngine:
         df_ohlcv: pd.DataFrame,
         persisted_state: Optional[dict] = None,
         last_processed_bar_time: Optional[str] = None,
-    ) -> tuple[Signal, dict, Optional['ConfirmationResult'], Optional[int]]:
+    ) -> tuple[Signal, dict, Optional['ConfirmationResult']]:
         """
         Advance state machine through new bars since last sweep.
         
@@ -1031,7 +1028,7 @@ class SignalEngine:
 
         # Return signal, state, and last confirmation result (if signal was generated)
         last_confirmation = self._last_confirmation_result if last_signal != Signal.NEUTRAL else None
-        return last_signal, updated_state, last_confirmation, self.state.last_signal_bar_index
+        return last_signal, updated_state, last_confirmation
 
     def _process_bar(
         self,
@@ -1204,7 +1201,6 @@ class SignalEngine:
                 f"(pos_multiplier={long_signal_result.position_size_multiplier:.1f}) | "
                 f"{long_signal_result.reason}"
             )
-            self.state.last_signal_bar_index = bar_idx
             s.reset_bull()
             return Signal.BUY
 
@@ -1214,7 +1210,6 @@ class SignalEngine:
                 f"(pos_multiplier={short_signal_result.position_size_multiplier:.1f}) | "
                 f"{short_signal_result.reason}"
             )
-            self.state.last_signal_bar_index = bar_idx
             s.reset_bear()
             return Signal.SELL
 

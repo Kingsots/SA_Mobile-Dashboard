@@ -693,7 +693,7 @@ class MLPipelineScheduler:
             return
         
         try:
-            async with TiingoFetcher() as fetcher:
+            async with TiingoFetcher(db=self.db) as fetcher:
                 # Check rate limits first
                 stats = fetcher.rate_limiter.get_usage_stats()
                 
@@ -842,10 +842,11 @@ class MLPipelineScheduler:
     async def session_snapshot_job(self, session_name: str):
         """
         Send session context snapshot at scheduled times (Asian, London, New York).
+        Weekdays only. Plain text format. Dual-channel send.
         
         Reads state from:
         - context_log: compression_score, expansion_pressure
-        - strategy_state: bull_entry_armed, bear_entry_armed
+        - strategy_state: bull_entry_armed, bear_entry_armed (limit 3)
         
         Args:
             session_name: "ASIAN", "LONDON", or "NEW_YORK"
@@ -859,126 +860,165 @@ class MLPipelineScheduler:
             logger.debug(f"Session snapshots disabled - skipping {session_name} snapshot")
             return
         
+        # Weekday filter: skip Saturday (5) and Sunday (6)
+        weekday = datetime.utcnow().weekday()
+        if weekday >= 5:
+            logger.debug(f"Skipping {session_name} snapshot (weekend)")
+            return
+        
         try:
             # ═══════════════════════════════════════════════════════════════
-            # STEP 1: FETCH ARMED PAIRS
+            # STEP 1: FETCH ARMED WINDOWS (ALL) + FOCUS PAIRS (TOP 3)
             # ═══════════════════════════════════════════════════════════════
-            armed_pairs = []
+            armed_count = 0
+            bull_count = 0
+            bear_count = 0
+            focus_pairs = []
+            focus_details = []  # For detailed focus lines
+            
             try:
-                # Query strategy_state for armed conditions
-                armed_data = self.db.query_all(
+                # Query ALL armed windows (no limit)
+                all_armed = self.db.query_all(
                     'strategy_state',
-                    where='bull_entry_armed = 1 OR bear_entry_armed = 1',
-                    limit=None
-                )
-                if armed_data:
-                    armed_pairs = [row.get('ticker') for row in armed_data]
-            except Exception as e:
-                logger.warning(f"Failed to fetch armed pairs: {e}")
-                armed_data = None
-            
-            armed_count = len(armed_pairs) if armed_pairs else 0
-            
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 2: FETCH WATCHING PAIRS
-            # ═══════════════════════════════════════════════════════════════
-            watching_count = 0
-            market_state = "Mixed state"
-            expansion_score = 0
-            compression_score = 0
-            
-            try:
-                # Query context_log for all pairs with valid context
-                context_data = self.db.query_all(
-                    'context_log',
-                    limit=None
+                    where='bull_entry_armed = 1 OR bear_entry_armed = 1'
                 )
                 
-                if context_data:
-                    watching_count = len(context_data)
+                if all_armed:
+                    armed_count = len(all_armed)
                     
-                    # Calculate market state based on majority conditions
-                    expansion_count = 0
-                    compression_count = 0
+                    # Count bull vs bear
+                    for row in all_armed:
+                        if row.get('bull_entry_armed'):
+                            bull_count += 1
+                        if row.get('bear_entry_armed'):
+                            bear_count += 1
                     
-                    for row in context_data:
-                        exp_pressure = row.get('expansion_pressure', 0)
-                        comp_score = row.get('compression_score', 0)
+                    # Sort by window advancement stage (higher bar = more advanced)
+                    # and take top 3 for FOCUS
+                    sorted_armed = sorted(
+                        all_armed,
+                        key=lambda r: (r.get('bull_entry_window_bar') or 0, r.get('bear_entry_window_bar') or 0),
+                        reverse=True
+                    )[:3]
+                    
+                    for row in sorted_armed:
+                        ticker = row.get('ticker')
+                        interval = row.get('interval', 'unknown')
+                        bull_armed = row.get('bull_entry_armed')
+                        bear_armed = row.get('bear_entry_armed')
                         
-                        if isinstance(exp_pressure, (int, float)):
-                            expansion_score += exp_pressure
-                        if isinstance(comp_score, (int, float)):
-                            compression_score += comp_score
+                        if ticker:
+                            focus_pairs.append(ticker)
+                            direction = 'Bull Entry Window' if bull_armed else 'Bear Entry Window'
+                            arrow = '[BULL]' if bull_armed else '[BEAR]'
+                            focus_details.append(f"{arrow} {ticker:8} {interval:3} - {direction}")
+                            
+            except Exception as e:
+                logger.warning(f"Failed to fetch armed windows: {e}")
+                armed_count = 0
+                bull_count = 0
+                bear_count = 0
+            
+            # ═══════════════════════════════════════════════════════════════
+            # STEP 2: FETCH MARKET CONTEXT (LATEST ROWS ONLY PER TICKER/INTERVAL)
+            # ═══════════════════════════════════════════════════════════════
+            state = "Balanced"
+            expansion_count = 0
+            compression_count = 0
+            
+            try:
+                # Query ONLY the latest row per (ticker, interval)
+                # This gives us the current market snapshot, not historical aggregate
+                import sqlite3
+                cursor = self.db.conn.cursor()
+                cursor.execute("""
+                    SELECT ticker, interval, compression_score, expansion_pressure
+                    FROM context_log
+                    WHERE (ticker, interval, timestamp) IN (
+                        SELECT ticker, interval, MAX(timestamp)
+                        FROM context_log
+                        GROUP BY ticker, interval
+                    )
+                """)
+                rows = cursor.fetchall()
+                
+                if rows:
+                    # Rows are tuples: (ticker, interval, compression_score, expansion_pressure)
+                    for row in rows:
+                        comp_score = float(row[2]) if row[2] is not None else 0.0
+                        exp_pressure = float(row[3]) if row[3] is not None else 0.0
                         
                         if exp_pressure > comp_score:
                             expansion_count += 1
                         else:
                             compression_count += 1
                     
-                    # Determine dominant market state
-                    if compression_count > expansion_count:
-                        market_state = "Compression dominant"
-                        bias = "Pressure building"
-                    elif expansion_count > compression_count:
-                        market_state = "Expansion active"
-                        bias = "Momentum active"
+                    # Determine state using simple rules
+                    if expansion_count > compression_count:
+                        state = "Expansion"
+                    elif compression_count > expansion_count:
+                        state = "Compression"
                     else:
-                        market_state = "Mixed state"
-                        bias = "Balanced conditions"
+                        state = "Balanced"
                 else:
-                    watching_count = 0
-                    market_state = "No data"
-                    bias = "Waiting for context"
+                    state = "No data"
                     
             except Exception as e:
-                logger.warning(f"Failed to fetch watching pairs: {e}")
-                watching_count = 0
-                market_state = "Data error"
-                bias = "Unable to assess"
+                logger.warning(f"Failed to fetch market context: {e}")
+                state = "Error"
+                expansion_count = 0
+                compression_count = 0
             
             # ═══════════════════════════════════════════════════════════════
-            # STEP 3: DETERMINE OPPORTUNITY LEVEL
+            # STEP 3: BUILD MILITARY GRID MESSAGE FORMAT
             # ═══════════════════════════════════════════════════════════════
-            threshold_high = 8
-            threshold_mid = 4
+            # Session name header
+            session_header = session_name  # Just use plain text, no emojis/special chars
             
-            if armed_count >= threshold_high:
-                opportunity = "High"
-            elif armed_count >= threshold_mid:
-                opportunity = "Moderate"
-            else:
-                opportunity = "Low"
+            # Format timestamp as MM-DD HH:MM
+            now = datetime.utcnow()
+            timestamp_short = now.strftime('%m-%d %H:%M')
             
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 4: BUILD MESSAGE
-            # ═══════════════════════════════════════════════════════════════
-            timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+            # Build focus lines with simple ASCII markers
+            focus_lines_str = '\n'.join(focus_details) if focus_details else "(No active setups)"
             
-            # Use safe formatting - no underscores (Telegram Markdown conflict)
+            # Verdict: simple rule
+            verdict = "EXECUTE" if expansion_count > compression_count else "REDUCE RISK"
+            
             message = (
-                f"🔍 {session_name} SESSION - CONTEXT SNAPSHOT\n"
-                f"Time: {timestamp}\n\n"
-                f"📊 Market State: {market_state}\n\n"
-                f"⚙️ System Status:\n"
-                f"  • {armed_count} pairs armed\n"
-                f"  • {watching_count} pairs under observation\n\n"
-                f"📈 Opportunity: {opportunity}\n\n"
-                f"🎯 Bias: {bias}"
+                f"{'='*40}\n"
+                f"SESSION BRIEF - {session_header}\n"
+                f"2026-{timestamp_short} UTC\n"
+                f"{'='*40}\n"
+                f"MARKET STATE   : {state}\n"
+                f"ARMED WINDOWS  : {armed_count} ({bull_count} Bull | {bear_count} Bear)\n"
+                f"{'-'*40}\n"
+                f"LIVE SETUPS\n"
+                f"{focus_lines_str}\n"
+                f"{'-'*40}\n"
+                f"EXPANSION PAIRS: {expansion_count}\n"
+                f"COMPRESSION PAIRS: {compression_count}\n"
+                f"SESSION VERDICT: {verdict}\n"
+                f"{'='*40}"
             )
             
             # ═══════════════════════════════════════════════════════════════
-            # STEP 5: SEND TO TELEGRAM
+            # STEP 4: SEND TO BOTH CHANNELS
             # ═══════════════════════════════════════════════════════════════
             result = await _run_blocking(self.telegram_bot.send_message, message)
             
             if result:
-                logger.info(f"📡 Session snapshot sent: {session_name} (armed={armed_count}, watching={watching_count})")
+                # Send to observation feed if configured (use correct method)
+                if hasattr(Config, 'OBSERVATION_CHANNEL_ID') and Config.OBSERVATION_CHANNEL_ID:
+                    await _run_blocking(self.telegram_bot.send_to_observation_channel, message)
+                
+                logger.info(f"Session snapshot sent: {session_name} (armed={armed_count}, focus={len(focus_pairs)})")
             else:
-                logger.warning(f"⚠️  Failed to send {session_name} snapshot")
+                logger.warning(f"Failed to send {session_name} snapshot")
             
         except Exception as e:
             # FAIL SAFE: Log error but don't crash scheduler
-            logger.error(f"❌ Error in {session_name} snapshot job: {e}", exc_info=True)
+            logger.error(f"Session snapshot failed ({session_name}): {str(e)}")
 
     async def event_monitor_job(self, interval: str = '1h'):
         """Run event monitor sweep and trigger ML signals when events fire."""
@@ -1281,7 +1321,7 @@ class MLPipelineScheduler:
                     v2_engine = SignalEngine(symbol, check_interval, v2_config)
                     
                     # Advance state through new bars
-                    signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
@@ -1306,11 +1346,10 @@ class MLPipelineScheduler:
                             direction=int(signal),
                             df_ohlcv=df,
                             confidence=1.0,
-                            source='v2_state_machine',
+                            source='v2_persistence',
                             metadata={
                                 'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
                                 'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
-                                'signal_bar_index': signal_bar_idx,
                             }
                         )
                         
@@ -1328,21 +1367,9 @@ class MLPipelineScheduler:
                             interval=signal_data['interval'],
                             signal=signal_data['signal'],
                             confidence=signal_data['confidence'],
-                            feature_snapshot=json.dumps({
-                                **signal_data.get('features', {}),
-                                **(
-                                    {
-                                        'context_compression': context_state.get('compression_score'),
-                                        'context_expansion': context_state.get('expansion_pressure'),
-                                        'context_rsi_stage': context_state.get('rsi_stage'),
-                                        'context_sweep': int(context_state.get('liquidity_sweep', False)),
-                                    }
-                                    if context_state is not None else {}
-                                ),
-                            }),
+                            feature_snapshot=json.dumps(signal_data.get('features', {})),
                             model_version='strategy_core_v2',
-                            triggered_by='v2_state_machine',
-                            strategy_version='v2',
+                            triggered_by='v2_persistence',
                             trade_id=signal_data.get('trade_id'),
                             entry_price=signal_data.get('entry_price'),
                             stop_loss=signal_data.get('stop_loss'),
@@ -1356,7 +1383,7 @@ class MLPipelineScheduler:
                         logger.info(f"[V2_PERSISTENCE] Signal from persistent state: {symbol} {check_interval} {signal.name}")
                         
                         # Track V2 persistence signal in pipeline
-                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_state_machine"
+                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_persistence"
                         self.pipeline_tracker.update_stage(
                             signal_id=v2_signal_id,
                             stage_name='stage3',  # Entry fired
@@ -1371,7 +1398,7 @@ class MLPipelineScheduler:
                         
                 except Exception as e:
                     logger.error(
-                        f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}"
+                        f"[V2_PERSISTENCE] Error advancing state for signal {signal_id}: {e}"
                     )
                     logger.error(f"TRACEBACK:\n{traceback.format_exc()}")
                     continue
@@ -1557,7 +1584,7 @@ class MLPipelineScheduler:
             v1_count = v1_result[0][0] if v1_result else 0
             
             v2_result = self.db.execute_query(
-                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_state_machine' AND datetime(timestamp) > datetime('now', '-1 day')"
+                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_persistence' AND datetime(timestamp) > datetime('now', '-1 day')"
             )
             v2_count = v2_result[0][0] if v2_result else 0
         except Exception as e:
@@ -1807,20 +1834,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             misfire_grace_time=300
         )
         logger.info(f"   ✅ Job registered: fetch_1h (every hour at :10 UTC, race-safe offset before event_monitor_1h)")
-
-        # Job 1c: Fetch 4h data every 4 hours (at :00 UTC, synced with data availability)
-        self.scheduler.add_job(
-            self.fetch_tiingo_data,
-            trigger=CronTrigger(minute='0', hour='*/4', timezone='UTC'),
-            args=['4h'],
-            id='fetch_4h',
-            name='Fetch 4h Tiingo Data',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-            replace_existing=True
-        )
-        logger.info(f"   ✅ Job registered: fetch_4h (every 4 hours at :00 UTC)")
         
         # Job 2: Optional time-based signal generation (disabled by default)
         if Config.ENABLE_TIME_TRIGGERED_SIGNALS:
@@ -1866,10 +1879,10 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             )
             logger.info(f"   ✅ Job registered: event_monitor_1h (hourly at :15 UTC)")
             
-            # 4h event monitor - every 4 hours at :10 UTC (safe offset from 1h monitor at :15 UTC)
+            # 4h event monitor - every hour at :10 UTC (sweep 4H interval hourly even though data arrives every 4h)
             self.scheduler.add_job(
                 self.event_monitor_job,
-                trigger=CronTrigger(hour='0,4,8,12,16,20', minute='10', timezone='UTC'),
+                trigger=CronTrigger(minute='10', timezone='UTC'),
                 args=['4h'],
                 id='event_monitor_4h',
                 name='Event Monitor Sweep (4h)',
@@ -1877,7 +1890,7 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
                 coalesce=True,
                 misfire_grace_time=120,
             )
-            logger.info(f"   ✅ Job registered: event_monitor_4h (every 4h at :10 UTC)")
+            logger.info(f"   ✅ Job registered: event_monitor_4h (every hour at :10 UTC)")
 
         # Job 4c: Time-based fallback DISABLED (March 1, 2026)
         # Pure event-driven architecture only - no time-based fallback signals

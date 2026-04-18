@@ -43,6 +43,7 @@ from signals.xgb_signal_engine_ec2 import PureStrategyEngine
 from signals.v2_execution_engine import V2ExecutionEngine
 from signals.trade_signal import TradeSignal
 from alerts.telegram_bot import TelegramBot
+from core.strategy_core_v3_prod import SilentStructureEngine
 import pandas as pd
 
 
@@ -174,6 +175,22 @@ def _verify_tiingo_token():
     logger.info(f"🔑 Tiingo API Token Loaded: {_mask_token(env_token)}")
     logger.info(f"✅ Token consistency verified - environment and config match")
 
+
+
+# ========== V3 PHASE 2 LOGGING ==========
+def evaluate_v3_logging(ticker, interval, df, context_state):
+    """V3 evaluation - logging only, no broadcast"""
+    try:
+        engine = SilentStructureEngine(ticker, interval)
+        result = engine.evaluate(df)
+        
+        if result and result.score >= 6:
+            logger.info(f"[V3_LOGGING] {ticker} {interval} score={result.score}/8 signal={result.label}")
+            return result
+        return None
+    except Exception as e:
+        logger.error(f"[V3_LOGGING] Evaluation error for {ticker} {interval}: {e}")
+        return None
 
 class MLPipelineScheduler:
     """
@@ -818,7 +835,7 @@ class MLPipelineScheduler:
                     signal_data = self.signal_engine.execute_trade_pipeline(
                         ticker=signal['ticker'],
                         interval=interval,
-                        strategy_name='ml_v1_scheduler',
+                        strategy_name='strategy_core_v1',
                         direction=int(signal['signal']),
                         df_ohlcv=None,  # Not needed for broadcast-only path
                         confidence=signal.get('confidence', 0.95),
@@ -1253,7 +1270,49 @@ class MLPipelineScheduler:
                 # Only trigger once per symbol per sweep to honour cooldown
                 break
 
+                # ============================================================================
+        # V3 PHASE 2 LOGGING - Confluence score observation
+            # Only evaluate V3 for 4h, 2h and 1h intervals (hourly, semi-weekly and weekly)
+        if interval in ['4h', '2h', '1h']:
+            # Only evaluate V3 for 4h and 2h intervals (weekly and semi-weekly)
+            for symbol in symbols:
+                try:
+                    df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+                    if df is None or df.empty:
+                        continue
+                    
+                    # Compute features for V3
+                    df_features = self.feature_engine.compute_all_features(df)
+                    
+                    # Get context state
+                    context_state = None
+                    if Config.CONTEXT_ENGINE_ENABLED and self.context_engine:
+                        context_state = self.context_engine.compute_context(df_features, symbol, interval)
+                    
+                    # Evaluate V3 in logging mode
+                    result = evaluate_v3_logging(symbol, interval, df_features, context_state)
+                    
+                except Exception as e:
+                    logger.error(f"[V3_PHASE2] Error evaluating {symbol} {interval}: {e}")
+
         # ============================================================================
+        # V3 PHASE 2 LOGGING - Confluence score observation (4h/2h only)
+        # ============================================================================
+        if interval in ['4h', '2h']:
+            for symbol in symbols:
+                try:
+                    df = self.db.load_ohlcv_data(symbol, interval, limit=250)
+                    if df is None or df.empty:
+                        continue
+                    df_features = self.feature_engine.compute_all_features(df)
+                    context_state = None
+                    if Config.CONTEXT_ENGINE_ENABLED and self.context_engine:
+                        context_state = self.context_engine.compute_context(df_features, symbol, interval)
+                    evaluate_v3_logging(symbol, interval, df_features, context_state)
+                except Exception as e:
+                    logger.error(f"[V3_PHASE2] Error: {symbol} {interval}: {e}")
+
+                # ============================================================================
         # V2 STATE PERSISTENCE - Advance state for all symbols across all intervals
         # ============================================================================
         # This ensures that V2 stage continuity persists across sweeps.
@@ -1281,7 +1340,7 @@ class MLPipelineScheduler:
                     v2_engine = SignalEngine(symbol, check_interval, v2_config)
                     
                     # Advance state through new bars
-                    signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
@@ -1310,7 +1369,6 @@ class MLPipelineScheduler:
                             metadata={
                                 'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
                                 'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
-                                'signal_bar_index': signal_bar_idx,
                             }
                         )
                         
@@ -1371,7 +1429,7 @@ class MLPipelineScheduler:
                         
                 except Exception as e:
                     logger.error(
-                        f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}"
+                        f"[V2_PERSISTENCE] Error advancing state for signal {signal_id}: {e}"
                     )
                     logger.error(f"TRACEBACK:\n{traceback.format_exc()}")
                     continue

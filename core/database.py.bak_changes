@@ -24,7 +24,6 @@ Unified database handling for all timeframes and symbols.
 
 import importlib
 import logging
-import os
 import sqlite3
 import pandas as pd
 from datetime import datetime, timezone, timedelta
@@ -55,25 +54,9 @@ class DatabaseManager:
             db_path: Path to database file (default: from config)
         """
         self.db_path = db_path or Config.DB_PATH
-        
-        # === RUNTIME TRACE: DB PATH INITIALIZATION ===
-        logging.info(f"\n{'='*80}")
-        logging.info("DATABASE MANAGER INITIALIZATION")
-        logging.info(f"Config.DB_PATH setting: {Config.DB_PATH}")
-        logging.info(f"db_path parameter: {db_path}")
-        logging.info(f"Resolved self.db_path: {self.db_path}")
-        logging.info(f"Current working directory: {os.getcwd()}")
-        abs_path = os.path.abspath(self.db_path)
-        logging.info(f"Absolute path: {abs_path}")
-        logging.info(f"Path exists: {os.path.exists(abs_path)}")
-        if os.path.exists(abs_path):
-            logging.info(f"File size: {os.path.getsize(abs_path)} bytes")
-        logging.info(f"{'='*80}\n")
-        
         # Persistent connection - ensures all DB ops see consistent state (prevents race conditions)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        logging.info(f"Connection object ID: {id(self.conn)}")
         self.init_database()
 
     def fetch_one(self, query: str, params: list = None):
@@ -97,76 +80,6 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"Error in fetch_one: {e}")
             return None
-
-    def query_all(self, table: str, where: str = None, limit: int = None) -> list:
-        """
-        Execute a SELECT * query and return all matching rows as list of dicts
-        
-        Args:
-            table: Table name to query
-            where: Optional WHERE clause (without the "WHERE" keyword)
-            limit: Optional LIMIT value
-        
-        Returns:
-            List of dictionaries (one per row), or empty list [] on error
-        """
-        # === RUNTIME TRACE: QUERY EXECUTION ===
-        logging.info(f"\n{'─'*80}")
-        logging.info(f"QUERY_ALL EXECUTION: {table}")
-        logging.info(f"Connection ID: {id(self.conn)}")
-        logging.info(f"Database path: {self.db_path}")
-        logging.info(f"Absolute path: {os.path.abspath(self.db_path)}")
-        logging.info(f"WHERE clause: {where if where else 'NONE'}")
-        logging.info(f"LIMIT: {limit if limit else 'NONE'}")
-        
-        try:
-            cursor = self.conn.cursor()
-            
-            # === VERIFY TABLES EXIST ===
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-            tables = cursor.fetchall()
-            table_names = [t[0] for t in tables]
-            logging.info(f"Tables in database: {table_names}")
-            
-            if table not in table_names:
-                logging.warning(f"TABLE '{table}' NOT FOUND IN DATABASE!")
-            
-            # === EXECUTE QUERY ===
-            query = f"SELECT * FROM {table}"
-            
-            if where:
-                query += f" WHERE {where}"
-            
-            if limit:
-                query += f" LIMIT {limit}"
-            
-            logging.info(f"Final SQL query: {query}")
-            cursor.execute(query)
-            rows = cursor.fetchall()
-            row_count = len(rows)
-            logging.info(f"Row count returned: {row_count}")
-            
-            # === CHECK ROW COUNT DIRECTLY ===
-            cursor.execute(f"SELECT COUNT(*) FROM {table};")
-            total_count = cursor.fetchone()[0]
-            logging.info(f"Total rows in table: {total_count}")
-            
-            logging.info(f"Status: SUCCESS")
-            logging.info(f"{'─'*80}\n")
-            
-            # Convert sqlite3.Row objects to dictionaries
-            return [dict(row) for row in rows] if rows else []
-        except Exception as e:
-            logging.error(f"\n{'─'*80}")
-            logging.error(f"EXCEPTION IN QUERY_ALL({table})")
-            logging.error(f"Error type: {type(e).__name__}")
-            logging.error(f"Error message: {e}")
-            logging.error(f"Exception traceback: ", exc_info=True)
-            logging.error(f"Database path used: {self.db_path}")
-            logging.error(f"Connection ID: {id(self.conn)}")
-            logging.error(f"Status: FAILED")
-            logging.error(f"{'─'*80}\n")
-            return []
 
     def init_database(self):
         """Initialize database with unified schema"""
@@ -388,40 +301,6 @@ class DatabaseManager:
                 '''
                 CREATE INDEX IF NOT EXISTS idx_context_timestamp 
                 ON context_log(timestamp)
-                ''',
-                '''
-                CREATE TABLE IF NOT EXISTS signal_forensics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    signal_id INTEGER,
-                    timestamp TEXT NOT NULL,
-                    ticker TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    strategy_version TEXT,
-                    model_version TEXT,
-                    price REAL,
-                    ema21 REAL,
-                    ema100_4h REAL,
-                    rsi14 REAL,
-                    is_bull_engulf INTEGER DEFAULT 0,
-                    is_bear_engulf INTEGER DEFAULT 0,
-                    daily_bull INTEGER DEFAULT 0,
-                    daily_bear INTEGER DEFAULT 0,
-                    sl_distance_pips REAL,
-                    tp_distance_pips REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-                ''',
-                '''
-                CREATE INDEX IF NOT EXISTS idx_signal_forensics_signal_id 
-                ON signal_forensics(signal_id)
-                ''',
-                '''
-                CREATE INDEX IF NOT EXISTS idx_signal_forensics_ticker 
-                ON signal_forensics(ticker)
-                ''',
-                '''
-                CREATE INDEX IF NOT EXISTS idx_signal_forensics_timestamp 
-                ON signal_forensics(timestamp)
                 ''',
             ]
 
@@ -1825,66 +1704,6 @@ class DatabaseManager:
             return True
         except Exception as e:
             logging.error(f"Failed to mark signal broadcasted: {e}")
-            return False
-
-    def insert_signal_forensics(
-        self,
-        signal_id: int = None,
-        timestamp: str = None,
-        ticker: str = None,
-        interval: str = None,
-        strategy_version: str = None,
-        model_version: str = None,
-        price: float = None,
-        ema21: float = None,
-        ema100_4h: float = None,
-        rsi14: float = None,
-        is_bull_engulf: int = 0,
-        is_bear_engulf: int = 0,
-        daily_bull: int = 0,
-        daily_bear: int = 0,
-        sl_distance_pips: float = None,
-        tp_distance_pips: float = None
-    ) -> bool:
-        """
-        Insert forensic data for signal broadcast (debugging and validation)
-        
-        Args:
-            signal_id: Reference to ml_signals.id
-            timestamp: Signal generation timestamp
-            ticker: Currency pair symbol
-            interval: Timeframe ('30m', '1h', '4h', etc.)
-            strategy_version: 'v1' or 'v2'
-            model_version: Full version string
-            price: Current price at creation
-            ema21: EMA21 value
-            ema100_4h: 4H EMA100 value
-            rsi14: RSI14 value
-            is_bull_engulf: 1 if bullish engulfing, 0 otherwise
-            is_bear_engulf: 1 if bearish engulfing, 0 otherwise
-            daily_bull: 1 if daily bullish alignment, 0 otherwise
-            daily_bear: 1 if daily bearish alignment, 0 otherwise
-            sl_distance_pips: Stop loss distance in pips
-            tp_distance_pips: Take profit distance in pips
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            with self.conn:
-                self.conn.execute(
-                    """INSERT INTO signal_forensics
-                       (signal_id, timestamp, ticker, interval, strategy_version, model_version,
-                        price, ema21, ema100_4h, rsi14, is_bull_engulf, is_bear_engulf,
-                        daily_bull, daily_bear, sl_distance_pips, tp_distance_pips)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (signal_id, timestamp, ticker, interval, strategy_version, model_version,
-                     price, ema21, ema100_4h, rsi14, is_bull_engulf, is_bear_engulf,
-                     daily_bull, daily_bear, sl_distance_pips, tp_distance_pips)
-                )
-            return True
-        except Exception as e:
-            logging.error(f"Failed to insert signal forensics: {e}")
             return False
 
     def get_processed_events_count(self) -> int:

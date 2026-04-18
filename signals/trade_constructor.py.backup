@@ -25,8 +25,63 @@ from datetime import datetime
 import time
 
 from signals.trade_signal import TradeSignal
-import logging
 
+
+# ─── PIP SIZE LOOKUP ──────────────────────────────────────────
+# Defines pip size per symbol for breakout buffer normalization.
+# Used only when Config.ENABLE_PIP_NORMALIZATION = True.
+# All values represent one pip in price terms.
+_PIP_SIZE_MAP = {
+    # Standard 4-decimal forex
+    'EURUSD': 0.0001,
+    'GBPUSD': 0.0001,
+    'AUDUSD': 0.0001,
+    'USDCAD': 0.0001,
+    'EURGBP': 0.0001,
+    'AUDCAD': 0.0001,
+    # JPY pairs — 2-decimal
+    'USDJPY': 0.01,
+    'AUDJPY': 0.01,
+    'GBPJPY': 0.01,
+    'CADJPY': 0.01,
+    'EURJPY': 0.01,
+    # Metals
+    'XAUUSD': 0.01,
+    # Indices — included for forward compatibility
+    'NAS100': 1.0,
+    'US30':   1.0,
+    'US500':  0.1,
+}
+
+def _get_pip_buffer(ticker: str, signal_price: float) -> float:
+    """
+    Returns pip-normalized breakout buffer for the given symbol.
+    Falls back to existing percentage-based buffer on any failure.
+    Called only when ENABLE_PIP_NORMALIZATION = True.
+    """
+    try:
+        from core.config import Config
+        pip_size = _PIP_SIZE_MAP.get(ticker, None)
+
+        if pip_size is None:
+            # Unknown symbol — fall back to existing logic
+            return signal_price * 0.0002
+
+        # Determine pip buffer count by symbol type
+        if ticker in ('USDJPY', 'AUDJPY', 'GBPJPY', 'CADJPY', 'EURJPY'):
+            pip_count = getattr(Config, 'PIP_BUFFER_JPY', 3)
+        elif ticker in ('XAUUSD',):
+            pip_count = getattr(Config, 'PIP_BUFFER_METALS', 3)
+        elif ticker in ('NAS100', 'US30', 'US500'):
+            pip_count = getattr(Config, 'PIP_BUFFER_INDICES', 5)
+        else:
+            pip_count = getattr(Config, 'PIP_BUFFER_STANDARD', 2)
+
+        return pip_size * pip_count
+
+    except Exception:
+        # Any failure — silent fallback to existing logic
+        return signal_price * 0.0002
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -71,39 +126,6 @@ def interval_to_seconds(interval: str) -> int:
     return mapping.get(interval, 3600)  # Default 1 hour
 
 
-
-
-def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
-    """
-    Calculate Wilder's ATR (Average True Range) using EWM.
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        OHLCV dataframe with 'high', 'low', 'close' columns
-    period : int
-        ATR period (default 14)
-    
-    Returns:
-    --------
-    float
-        Current ATR value
-    """
-    high, low, close = df['high'], df['low'], df['close']
-    prev_close = close.shift(1)
-    
-    # Calculate True Range
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
-    
-    # Exponential Moving Average of True Range
-    atr = tr.ewm(alpha=1/period, adjust=False, min_periods=period).mean()
-    return float(atr.iloc[-1])
-
-
 def build_trade_signal(
     ticker: str,
     interval: str,
@@ -111,7 +133,6 @@ def build_trade_signal(
     direction: int,
     strategy_name: str,
     confidence: float = 1.0,
-    signal_bar_index: Optional[int] = None,
 ) -> Optional[TradeSignal]:
     """
     Build a complete trade signal from strategy output.
@@ -136,11 +157,6 @@ def build_trade_signal(
     TradeSignal or None
         Complete trade signal, or None for NEUTRAL (direction==0)
     """
-
-    logger = logging.getLogger(__name__)
-    logger.info(f"[BUILD_DEBUG] START | ticker={ticker}, direction={direction}, interval={interval}")
-    logger.info(f"[BUILD_DEBUG] df_ohlcv shape: {df_ohlcv.shape if df_ohlcv is not None else 'None'}")
-
     
     # Return None for neutral signals
     if direction == 0:
@@ -155,19 +171,10 @@ def build_trade_signal(
     # Entry triggers when price breaks the signal candle high/low
     # ═══════════════════════════════════════════════════════════════════════
     
-    # Signal candle is the bar that triggered the signal
-    # If signal_bar_index is provided, use it; otherwise fall back to last bar (for V1 and backward compat)
-    if signal_bar_index is not None and 0 <= signal_bar_index < len(df_ohlcv):
-        signal_candle = df_ohlcv.iloc[signal_bar_index]
-    else:
-        signal_candle = df_ohlcv.iloc[-1]  # Fallback for V1 and other callers
-    
+    # Signal candle is the last fully closed candle
+    signal_candle = df_ohlcv.iloc[-1]
     signal_high = float(signal_candle['high'])
     signal_low = float(signal_candle['low'])
-    
-    # Debug logging for signal bar index tracking
-    if signal_bar_index is not None:
-        logger.info(f"[ENTRY_DEBUG] {ticker}-{interval} | Using bar index {signal_bar_index} for entry calculation")
     
     # Extract signal candle timestamp and calculate expiry
     if 'timestamp' in signal_candle.index:
@@ -183,9 +190,19 @@ def build_trade_signal(
     interval_seconds = interval_to_seconds(interval)
     expiry_timestamp_int = signal_candle_time_int + (expiry_candles_count * interval_seconds)
     
-    # Breakout buffer (0.0002 ≈ 2 pips on EURUSD at 1.1000)
-    # Prevents micro-fakeouts and slippage
-    breakout_buffer = signal_high * 0.0002  # Dynamic buffer based on price level
+    # Breakout buffer — pip-normalized when flag enabled,
+    # existing percentage logic when disabled.
+    try:
+        from core.config import Config
+        _pip_norm_enabled = getattr(Config, 'ENABLE_PIP_NORMALIZATION', False)
+    except Exception:
+        _pip_norm_enabled = False
+
+    if _pip_norm_enabled:
+        breakout_buffer = _get_pip_buffer(ticker, signal_high)
+    else:
+        # Existing logic — unchanged
+        breakout_buffer = signal_high * 0.0002
     
     # Entry price based on direction (stop-entry breakout level)
     if direction == 1:  # BUY
@@ -196,27 +213,35 @@ def build_trade_signal(
         entry_price = signal_low - breakout_buffer
     else:
         return None
-    logger.info(f"[BUILD_DEBUG] entry_price calculated: {entry_price}")
     
-    # Calculate Wilder's ATR for stop loss sizing
-    atr_value = calculate_atr(df_ohlcv, period=14)
-    logger.info(f"[BUILD_DEBUG] atr_value calculated: {atr_value}")
-    min_stop = atr_value * 1.5  # 1.5× ATR multiplier for professional stops
-    logger.info(f"[BUILD_DEBUG] min_stop calculated: {min_stop}")
-
+    # Calculate stop loss using rolling swing structure (unchanged)
+    # This creates professional, swing-level stops
     if direction == 1:  # BUY
-        stop_loss = entry_price - min_stop
-        take_profit = entry_price + (min_stop * 2.0)  # 2:1 R:R
+        # For BUY: use rolling minimum (low pivot)
+        rolling_lows = df_ohlcv['low'].rolling(window=3).min()
+        # Take the minimum over last 5 bars
+        stop_loss = float(rolling_lows.iloc[-5:].min())
+        
     else:  # SELL (direction == -1)
-        stop_loss = entry_price + min_stop
-        take_profit = entry_price - (min_stop * 2.0)  # 2:1 R:R
-
-    # Calculate risk-reward ratio from ATR-based stops
-    logger.info(f"[BUILD_DEBUG] FINAL | stop_loss={stop_loss}, take_profit={take_profit}, entry={entry_price}")
+        # For SELL: use rolling maximum (high pivot)
+        rolling_highs = df_ohlcv['high'].rolling(window=3).max()
+        # Take the maximum over last 5 bars
+        stop_loss = float(rolling_highs.iloc[-5:].max())
+    
+    # Calculate risk distance and take profit from breakout entry
     risk_distance = abs(entry_price - stop_loss)
+    
+    if direction == 1:  # BUY
+        # TP is 2x risk distance above entry
+        take_profit = entry_price + (2 * risk_distance)
+    else:  # SELL
+        # TP is 2x risk distance below entry
+        take_profit = entry_price - (2 * risk_distance)
+    
+    # Recalculate risk-reward ratio
     reward_distance = abs(take_profit - entry_price)
     risk_reward_ratio = reward_distance / risk_distance if risk_distance > 0 else 2.0
-
+    
     # Create and return the trade signal
     signal = TradeSignal(
         ticker=ticker,

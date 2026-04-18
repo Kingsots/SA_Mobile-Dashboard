@@ -46,12 +46,6 @@ from alerts.telegram_bot import TelegramBot
 import pandas as pd
 
 
-def _mask_token(token: str) -> str:
-    """Mask token for safe logging (show first 6 and last 4 chars)"""
-    if not token or len(token) < 10:
-        return "INVALID"
-    return token[:6] + "..." + token[-4:]
-
 
 def log_stage_transition(ticker, interval, direction, old_stage, new_stage, bar_num, bar_time, price, notes=""):
     """Log strategy state transitions for forensic audit trail."""
@@ -133,48 +127,6 @@ def verify_database_dependencies(db):
     logger.info(f"✅ Database dependency check passed - all {len(required_methods)} critical methods present")
 
 
-def _verify_tiingo_token():
-    """
-    CRITICAL: Verify that Tiingo API token is present and consistent.
-    Prevents silent configuration errors that could cause cascading API failures.
-    
-    Raises:
-        RuntimeError: If token is missing, invalid, or mismatched
-    """
-    import os
-    
-    # Get token from environment
-    env_token = os.getenv('TIINGO_API_TOKEN')
-    
-    if not env_token:
-        error_msg = (
-            "\n🔴 CRITICAL TOKEN ERROR:\n"
-            "   Environment variable TIINGO_API_TOKEN is not set.\n"
-            "   Expected: /etc/opticore.env or systemd EnvironmentFile\n"
-            "   Action: Set TIINGO_API_TOKEN before starting service"
-        )
-        logger.critical(error_msg)
-        raise RuntimeError(error_msg)
-    
-    # Get token from config (which also reads from environment)
-    config_token = Config.TIINGO_API_TOKEN
-    
-    # Verify consistency
-    if env_token != config_token:
-        error_msg = (
-            f"\n🔴 TOKEN MISMATCH ERROR:\n"
-            f"   Environment: {_mask_token(env_token)}\n"
-            f"   Config loaded: {_mask_token(config_token)}\n"
-            f"   This indicates a configuration inconsistency that MUST be fixed."
-        )
-        logger.critical(error_msg)
-        raise RuntimeError(error_msg)
-    
-    # Log masked token at startup
-    logger.info(f"🔑 Tiingo API Token Loaded: {_mask_token(env_token)}")
-    logger.info(f"✅ Token consistency verified - environment and config match")
-
-
 class MLPipelineScheduler:
     """
     Async scheduler for ML pipeline operations
@@ -210,9 +162,6 @@ class MLPipelineScheduler:
         
         # CRITICAL: Verify database layer is complete before proceeding
         verify_database_dependencies(self.db)
-        
-        # CRITICAL: Verify Tiingo API token is present and consistent
-        _verify_tiingo_token()
         
         self.feature_engine = FeatureEngine()
         self.signal_engine = PureStrategyEngine()
@@ -697,6 +646,12 @@ class MLPipelineScheduler:
                 # Check rate limits first
                 stats = fetcher.rate_limiter.get_usage_stats()
                 
+                if stats['hourly_remaining'] < 5 or stats['daily_remaining'] < 10:
+                    logger.warning(f"⚠️  Rate limit low - skipping fetch")
+                    logger.warning(f"   Hourly: {stats['hourly_remaining']} remaining")
+                    logger.warning(f"   Daily: {stats['daily_remaining']} remaining")
+                    return
+                
                 # Fetch data
                 results = await fetcher.fetch_batch(interval, symbols)
                 
@@ -838,147 +793,6 @@ class MLPipelineScheduler:
         except Exception as e:
             logger.error(f"❌ Signal generation failed: {e}")
             raise
-
-    async def session_snapshot_job(self, session_name: str):
-        """
-        Send session context snapshot at scheduled times (Asian, London, New York).
-        
-        Reads state from:
-        - context_log: compression_score, expansion_pressure
-        - strategy_state: bull_entry_armed, bear_entry_armed
-        
-        Args:
-            session_name: "ASIAN", "LONDON", or "NEW_YORK"
-        """
-        
-        if not self.enable_telegram:
-            logger.debug(f"Telegram disabled - skipping {session_name} snapshot")
-            return
-        
-        if not Config.TELEGRAM_SEND_SESSION_SNAPSHOTS:
-            logger.debug(f"Session snapshots disabled - skipping {session_name} snapshot")
-            return
-        
-        try:
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 1: FETCH ARMED PAIRS
-            # ═══════════════════════════════════════════════════════════════
-            armed_pairs = []
-            try:
-                # Query strategy_state for armed conditions
-                armed_data = self.db.query_all(
-                    'strategy_state',
-                    where='bull_entry_armed = 1 OR bear_entry_armed = 1',
-                    limit=None
-                )
-                if armed_data:
-                    armed_pairs = [row.get('ticker') for row in armed_data]
-            except Exception as e:
-                logger.warning(f"Failed to fetch armed pairs: {e}")
-                armed_data = None
-            
-            armed_count = len(armed_pairs) if armed_pairs else 0
-            
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 2: FETCH WATCHING PAIRS
-            # ═══════════════════════════════════════════════════════════════
-            watching_count = 0
-            market_state = "Mixed state"
-            expansion_score = 0
-            compression_score = 0
-            
-            try:
-                # Query context_log for all pairs with valid context
-                context_data = self.db.query_all(
-                    'context_log',
-                    limit=None
-                )
-                
-                if context_data:
-                    watching_count = len(context_data)
-                    
-                    # Calculate market state based on majority conditions
-                    expansion_count = 0
-                    compression_count = 0
-                    
-                    for row in context_data:
-                        exp_pressure = row.get('expansion_pressure', 0)
-                        comp_score = row.get('compression_score', 0)
-                        
-                        if isinstance(exp_pressure, (int, float)):
-                            expansion_score += exp_pressure
-                        if isinstance(comp_score, (int, float)):
-                            compression_score += comp_score
-                        
-                        if exp_pressure > comp_score:
-                            expansion_count += 1
-                        else:
-                            compression_count += 1
-                    
-                    # Determine dominant market state
-                    if compression_count > expansion_count:
-                        market_state = "Compression dominant"
-                        bias = "Pressure building"
-                    elif expansion_count > compression_count:
-                        market_state = "Expansion active"
-                        bias = "Momentum active"
-                    else:
-                        market_state = "Mixed state"
-                        bias = "Balanced conditions"
-                else:
-                    watching_count = 0
-                    market_state = "No data"
-                    bias = "Waiting for context"
-                    
-            except Exception as e:
-                logger.warning(f"Failed to fetch watching pairs: {e}")
-                watching_count = 0
-                market_state = "Data error"
-                bias = "Unable to assess"
-            
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 3: DETERMINE OPPORTUNITY LEVEL
-            # ═══════════════════════════════════════════════════════════════
-            threshold_high = 8
-            threshold_mid = 4
-            
-            if armed_count >= threshold_high:
-                opportunity = "High"
-            elif armed_count >= threshold_mid:
-                opportunity = "Moderate"
-            else:
-                opportunity = "Low"
-            
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 4: BUILD MESSAGE
-            # ═══════════════════════════════════════════════════════════════
-            timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-            
-            # Use safe formatting - no underscores (Telegram Markdown conflict)
-            message = (
-                f"🔍 {session_name} SESSION - CONTEXT SNAPSHOT\n"
-                f"Time: {timestamp}\n\n"
-                f"📊 Market State: {market_state}\n\n"
-                f"⚙️ System Status:\n"
-                f"  • {armed_count} pairs armed\n"
-                f"  • {watching_count} pairs under observation\n\n"
-                f"📈 Opportunity: {opportunity}\n\n"
-                f"🎯 Bias: {bias}"
-            )
-            
-            # ═══════════════════════════════════════════════════════════════
-            # STEP 5: SEND TO TELEGRAM
-            # ═══════════════════════════════════════════════════════════════
-            result = await _run_blocking(self.telegram_bot.send_message, message)
-            
-            if result:
-                logger.info(f"📡 Session snapshot sent: {session_name} (armed={armed_count}, watching={watching_count})")
-            else:
-                logger.warning(f"⚠️  Failed to send {session_name} snapshot")
-            
-        except Exception as e:
-            # FAIL SAFE: Log error but don't crash scheduler
-            logger.error(f"❌ Error in {session_name} snapshot job: {e}", exc_info=True)
 
     async def event_monitor_job(self, interval: str = '1h'):
         """Run event monitor sweep and trigger ML signals when events fire."""
@@ -1281,7 +1095,7 @@ class MLPipelineScheduler:
                     v2_engine = SignalEngine(symbol, check_interval, v2_config)
                     
                     # Advance state through new bars
-                    signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
@@ -1306,11 +1120,10 @@ class MLPipelineScheduler:
                             direction=int(signal),
                             df_ohlcv=df,
                             confidence=1.0,
-                            source='v2_state_machine',
+                            source='v2_persistence',
                             metadata={
                                 'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
                                 'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
-                                'signal_bar_index': signal_bar_idx,
                             }
                         )
                         
@@ -1328,21 +1141,9 @@ class MLPipelineScheduler:
                             interval=signal_data['interval'],
                             signal=signal_data['signal'],
                             confidence=signal_data['confidence'],
-                            feature_snapshot=json.dumps({
-                                **signal_data.get('features', {}),
-                                **(
-                                    {
-                                        'context_compression': context_state.get('compression_score'),
-                                        'context_expansion': context_state.get('expansion_pressure'),
-                                        'context_rsi_stage': context_state.get('rsi_stage'),
-                                        'context_sweep': int(context_state.get('liquidity_sweep', False)),
-                                    }
-                                    if context_state is not None else {}
-                                ),
-                            }),
+                            feature_snapshot=json.dumps(signal_data.get('features', {})),
                             model_version='strategy_core_v2',
-                            triggered_by='v2_state_machine',
-                            strategy_version='v2',
+                            triggered_by='v2_persistence',
                             trade_id=signal_data.get('trade_id'),
                             entry_price=signal_data.get('entry_price'),
                             stop_loss=signal_data.get('stop_loss'),
@@ -1356,7 +1157,7 @@ class MLPipelineScheduler:
                         logger.info(f"[V2_PERSISTENCE] Signal from persistent state: {symbol} {check_interval} {signal.name}")
                         
                         # Track V2 persistence signal in pipeline
-                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_state_machine"
+                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_persistence"
                         self.pipeline_tracker.update_stage(
                             signal_id=v2_signal_id,
                             stage_name='stage3',  # Entry fired
@@ -1371,7 +1172,7 @@ class MLPipelineScheduler:
                         
                 except Exception as e:
                     logger.error(
-                        f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}"
+                        f"[V2_PERSISTENCE] Error advancing state for signal {signal_id}: {e}"
                     )
                     logger.error(f"TRACEBACK:\n{traceback.format_exc()}")
                     continue
@@ -1557,7 +1358,7 @@ class MLPipelineScheduler:
             v1_count = v1_result[0][0] if v1_result else 0
             
             v2_result = self.db.execute_query(
-                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_state_machine' AND datetime(timestamp) > datetime('now', '-1 day')"
+                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_persistence' AND datetime(timestamp) > datetime('now', '-1 day')"
             )
             v2_count = v2_result[0][0] if v2_result else 0
         except Exception as e:
@@ -1795,7 +1596,20 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
         )
         logger.info(f"   ✅ Job registered: fetch_30m (every 30 min at :00/:30 UTC)")
         
-        # Job 1b: Fetch 1h data every hour (at :10 UTC - race-safe offset before event_monitor_1h at :15 UTC)
+        # Job 1b: Fetch 4h data every 4 hours (at :00 UTC)
+        self.scheduler.add_job(
+            self.fetch_tiingo_data,
+            trigger=CronTrigger(minute=0, hour='*/4', timezone='UTC'),
+            args=['4h'],
+            id='fetch_4h',
+            name='Fetch 4h Tiingo Data',
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300
+        )
+        logger.info(f"   ✅ Job registered: fetch_4h (every 4 hours at :00 UTC)")
+        
+        # Job 1c: Fetch 1h data every hour (at :10 UTC - race-safe offset before event_monitor_1h at :15 UTC)
         self.scheduler.add_job(
             self.fetch_tiingo_data,
             trigger=CronTrigger(minute=10, timezone='UTC'),
@@ -1807,20 +1621,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             misfire_grace_time=300
         )
         logger.info(f"   ✅ Job registered: fetch_1h (every hour at :10 UTC, race-safe offset before event_monitor_1h)")
-
-        # Job 1c: Fetch 4h data every 4 hours (at :00 UTC, synced with data availability)
-        self.scheduler.add_job(
-            self.fetch_tiingo_data,
-            trigger=CronTrigger(minute='0', hour='*/4', timezone='UTC'),
-            args=['4h'],
-            id='fetch_4h',
-            name='Fetch 4h Tiingo Data',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-            replace_existing=True
-        )
-        logger.info(f"   ✅ Job registered: fetch_4h (every 4 hours at :00 UTC)")
         
         # Job 2: Optional time-based signal generation (disabled by default)
         if Config.ENABLE_TIME_TRIGGERED_SIGNALS:
@@ -1924,45 +1724,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
         # )
         # logger.info(f"   ✅ Job registered: data_starvation_check (every 5 min, alerts if 45+ min without data)")
         logger.info(f"   ⏸️  Job DISABLED: data_starvation_check (not needed - user monitoring manually)")
-        
-        # Job 9a: Session snapshot for ASIAN session (22:00 UTC)
-        self.scheduler.add_job(
-            self.session_snapshot_job,
-            trigger=CronTrigger(hour=22, minute=0, timezone='UTC'),
-            args=["ASIAN"],
-            id='session_snapshot_asian',
-            name='Session Snapshot - Asian',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300
-        )
-        logger.info(f"   ✅ Job registered: session_snapshot_asian (22:00 UTC)")
-        
-        # Job 9b: Session snapshot for LONDON session (08:00 UTC)
-        self.scheduler.add_job(
-            self.session_snapshot_job,
-            trigger=CronTrigger(hour=8, minute=0, timezone='UTC'),
-            args=["LONDON"],
-            id='session_snapshot_london',
-            name='Session Snapshot - London',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300
-        )
-        logger.info(f"   ✅ Job registered: session_snapshot_london (08:00 UTC)")
-        
-        # Job 9c: Session snapshot for NEW_YORK session (13:00 UTC)
-        self.scheduler.add_job(
-            self.session_snapshot_job,
-            trigger=CronTrigger(hour=13, minute=0, timezone='UTC'),
-            args=["NEW_YORK"],
-            id='session_snapshot_newyork',
-            name='Session Snapshot - New York',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300
-        )
-        logger.info(f"   ✅ Job registered: session_snapshot_newyork (13:00 UTC)")
         
         total_jobs = len(self.scheduler.get_jobs())
         logger.info(f"✅ All jobs registered ({total_jobs} total)")

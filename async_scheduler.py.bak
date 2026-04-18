@@ -693,7 +693,7 @@ class MLPipelineScheduler:
             return
         
         try:
-            async with TiingoFetcher() as fetcher:
+            async with TiingoFetcher(db=self.db) as fetcher:
                 # Check rate limits first
                 stats = fetcher.rate_limiter.get_usage_stats()
                 
@@ -1281,7 +1281,7 @@ class MLPipelineScheduler:
                     v2_engine = SignalEngine(symbol, check_interval, v2_config)
                     
                     # Advance state through new bars
-                    signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
+                    signal, updated_state, confirmation_result = v2_engine.advance_state(
                         df_ohlcv=df,
                         persisted_state=persisted_state,
                         last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
@@ -1306,11 +1306,10 @@ class MLPipelineScheduler:
                             direction=int(signal),
                             df_ohlcv=df,
                             confidence=1.0,
-                            source='v2_state_machine',
+                            source='v2_persistence',
                             metadata={
                                 'confirmation_mode': confirmation_result.mode if confirmation_result else 'trend_continuation',
                                 'position_size_multiplier': confirmation_result.position_size_multiplier if confirmation_result else 1.0,
-                                'signal_bar_index': signal_bar_idx,
                             }
                         )
                         
@@ -1341,8 +1340,7 @@ class MLPipelineScheduler:
                                 ),
                             }),
                             model_version='strategy_core_v2',
-                            triggered_by='v2_state_machine',
-                            strategy_version='v2',
+                            triggered_by='v2_persistence',
                             trade_id=signal_data.get('trade_id'),
                             entry_price=signal_data.get('entry_price'),
                             stop_loss=signal_data.get('stop_loss'),
@@ -1356,7 +1354,7 @@ class MLPipelineScheduler:
                         logger.info(f"[V2_PERSISTENCE] Signal from persistent state: {symbol} {check_interval} {signal.name}")
                         
                         # Track V2 persistence signal in pipeline
-                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_state_machine"
+                        v2_signal_id = f"{symbol}|{check_interval}|{signal_data['timestamp']}|v2_persistence"
                         self.pipeline_tracker.update_stage(
                             signal_id=v2_signal_id,
                             stage_name='stage3',  # Entry fired
@@ -1371,7 +1369,7 @@ class MLPipelineScheduler:
                         
                 except Exception as e:
                     logger.error(
-                        f"[V2_PERSISTENCE] Error advancing state for {symbol} {check_interval}: {e}"
+                        f"[V2_PERSISTENCE] Error advancing state for signal {signal_id}: {e}"
                     )
                     logger.error(f"TRACEBACK:\n{traceback.format_exc()}")
                     continue
@@ -1557,7 +1555,7 @@ class MLPipelineScheduler:
             v1_count = v1_result[0][0] if v1_result else 0
             
             v2_result = self.db.execute_query(
-                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_state_machine' AND datetime(timestamp) > datetime('now', '-1 day')"
+                "SELECT COUNT(*) FROM ml_signals WHERE triggered_by='v2_persistence' AND datetime(timestamp) > datetime('now', '-1 day')"
             )
             v2_count = v2_result[0][0] if v2_result else 0
         except Exception as e:
@@ -1807,20 +1805,6 @@ Health:    {health_emoji} HEALTHY  │ Engine:  {engine_emoji} ACTIVE
             misfire_grace_time=300
         )
         logger.info(f"   ✅ Job registered: fetch_1h (every hour at :10 UTC, race-safe offset before event_monitor_1h)")
-
-        # Job 1c: Fetch 4h data every 4 hours (at :00 UTC, synced with data availability)
-        self.scheduler.add_job(
-            self.fetch_tiingo_data,
-            trigger=CronTrigger(minute='0', hour='*/4', timezone='UTC'),
-            args=['4h'],
-            id='fetch_4h',
-            name='Fetch 4h Tiingo Data',
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-            replace_existing=True
-        )
-        logger.info(f"   ✅ Job registered: fetch_4h (every 4 hours at :00 UTC)")
         
         # Job 2: Optional time-based signal generation (disabled by default)
         if Config.ENABLE_TIME_TRIGGERED_SIGNALS:

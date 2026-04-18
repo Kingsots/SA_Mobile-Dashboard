@@ -111,7 +111,6 @@ def build_trade_signal(
     direction: int,
     strategy_name: str,
     confidence: float = 1.0,
-    signal_bar_index: Optional[int] = None,
 ) -> Optional[TradeSignal]:
     """
     Build a complete trade signal from strategy output.
@@ -155,19 +154,10 @@ def build_trade_signal(
     # Entry triggers when price breaks the signal candle high/low
     # ═══════════════════════════════════════════════════════════════════════
     
-    # Signal candle is the bar that triggered the signal
-    # If signal_bar_index is provided, use it; otherwise fall back to last bar (for V1 and backward compat)
-    if signal_bar_index is not None and 0 <= signal_bar_index < len(df_ohlcv):
-        signal_candle = df_ohlcv.iloc[signal_bar_index]
-    else:
-        signal_candle = df_ohlcv.iloc[-1]  # Fallback for V1 and other callers
-    
+    # Signal candle is the last fully closed candle
+    signal_candle = df_ohlcv.iloc[-1]
     signal_high = float(signal_candle['high'])
     signal_low = float(signal_candle['low'])
-    
-    # Debug logging for signal bar index tracking
-    if signal_bar_index is not None:
-        logger.info(f"[ENTRY_DEBUG] {ticker}-{interval} | Using bar index {signal_bar_index} for entry calculation")
     
     # Extract signal candle timestamp and calculate expiry
     if 'timestamp' in signal_candle.index:

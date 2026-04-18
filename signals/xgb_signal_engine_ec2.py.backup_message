@@ -43,14 +43,6 @@ except Exception as e:
     evaluate_v2 = None
     logging.error(f"Failed to import strategy_core_v2: {e}")
 
-try:
-    from core.strategy_core_v3_prod import SilentStructureEngine as V3Engine
-    STRATEGY_V3_AVAILABLE = True
-except Exception as e:
-    STRATEGY_V3_AVAILABLE = False
-    V3Engine = None
-    logging.error(f"Failed to import strategy_core_v3_prod: {e}")
-
 
 LOG_DIR = Path('logs')
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -126,9 +118,6 @@ class PureStrategyEngine:
         # Value: datetime of last signal broadcast
         self._signal_cooldown: Dict[Tuple[str, str, int], datetime] = {}
         
-        # V3 Engine cache: one engine instance per symbol/interval pair
-        self.v3_engines: Dict[str, V3Engine] = {}
-        
         # Initialize Telegram for alerts
         try:
             self.telegram_bot = TelegramBot()
@@ -140,38 +129,11 @@ class PureStrategyEngine:
         print("✅ Pure Strategy Engine Initialized")
         print(f"   V1 Available: {STRATEGY_V1_AVAILABLE}")
         print(f"   V2 Available: {STRATEGY_V2_AVAILABLE}")
-        print(f"   V3 Available: {STRATEGY_V3_AVAILABLE}")
         print("="*70 + "\n")
     
     def load_model(self):
         """Backward compatibility - pure strategy needs no model loading"""
         pass
-    
-    def _get_v3_engine(self, ticker: str, interval: str) -> Optional[V3Engine]:
-        """Get or create V3 engine instance for symbol/interval pair."""
-        if not STRATEGY_V3_AVAILABLE or V3Engine is None:
-            return None
-        
-        key = f"{ticker}|{interval}"
-        if key not in self.v3_engines:
-            try:
-                self.v3_engines[key] = V3Engine(ticker, interval)
-                # Load existing state from database if available
-                state = self.db.load_strategy_state(ticker, interval, 'strategy_core_v3')
-                if state:
-                    self.v3_engines[key].restore_state(state)
-                logging.debug(f"[V3] Created engine for {ticker}-{interval}")
-            except Exception as e:
-                logging.error(f"[V3] Failed to create engine for {ticker}-{interval}: {e}")
-                return None
-        return self.v3_engines[key]
-    
-    def _get_pip_size(self, ticker: str) -> float:
-        """Return pip size for instrument from config."""
-        try:
-            return Config.PIP_SIZE_MAP.get(ticker, 0.0001)
-        except Exception:
-            return 0.0001
     
     def _is_duplicate_trade(self, ticker: str, interval: str, direction: int, entry_price: float) -> bool:
         """
@@ -212,8 +174,6 @@ class PureStrategyEngine:
             trade_key = f"{ticker}-{interval}-{direction_text}-{entry_price:.4f}"
             
             # Query for identical signals within 60-minute window
-            # CRITICAL FIX: Only block if signal was ACTUALLY broadcast (broadcasted=1)
-            # This prevents blocking on failed broadcasts or signals not yet sent
             price_tolerance = entry_price * 0.005  # 0.5% tolerance for floating point comparison
             query = """
                 SELECT COUNT(*) FROM ml_signals
@@ -346,88 +306,32 @@ class PureStrategyEngine:
             tp = signal_data.get('take_profit', 0)
             rr = signal_data.get('risk_reward', 0)
             trade_id = signal_data.get('trade_id', 'N/A')[:12]
-            strategy_name = signal_data.get('source', 'unknown')
+            
+            alert_msg = f"""
+{emoji} TRADE SIGNAL CONSTRUCTED
 
-            pip_size = getattr(Config, "PIP_SIZE_MAP", {}).get(ticker, 0.0001)
-            sl_pips  = abs(entry - sl) / pip_size if pip_size > 0 else 0
-            tp_pips  = abs(tp - entry) / pip_size if pip_size > 0 else 0
-            tf       = getattr(Config, "TIMEFRAME_CONTEXT", {}).get(interval, {})
+Symbol: {ticker}
+Timeframe: {interval}
+Direction: {direction_text}
+Trade ID: {trade_id}
 
-            alert_msg = (
-                f"{'='*40}\n"
-                f"SIGNAL BROADCAST - SILENT ANALYST\n"
-                f"{'='*40}\n"
-                f"ID         : SA-{trade_id[:8]}\n"
-                f"INSTRUMENT : {ticker}\n"
-                f"DIRECTION  : {'BUY' if direction == 1 else 'SELL'}\n"
-                f"{'-'*40}\n"
-                f"TIMEFRAME  : {interval.upper()} - {tf.get('label', '')}\n"
-                f"HOLD EST.  : {tf.get('hold', '')}\n"
-                f"BEHAVIOUR  : {tf.get('behaviour', '')}\n"
-                f"{'-'*40}\n"
-                f"ENTRY      : {entry:.4f}\n"
-                f"STOP LOSS  : {sl:.4f}  ({sl_pips:.0f} pips)\n"
-                f"TAKE PROFIT: {tp:.4f}  ({tp_pips:.0f} pips)\n"
-                f"R:R        : {rr:.2f} : 1\n"
-                f"{'-'*40}\n"
-                f"TRIGGER    : Breakout Confirmation\n"
-                f"CONFIDENCE : 100%\n"
-                f"ENGINE     : {'V2 State Machine' if 'v2' in strategy_name.lower() else 'V1 Core'}\n"
-                f"STATUS     : ACTIVE\n"
-                f"{'='*40}"
-            )
+Entry:  {entry:.4f}
+Stop Loss: {sl:.4f}
+Take Profit: {tp:.4f}
+Risk-Reward: {rr:.2f}:1
 
+Entry Type: Breakout Confirmation
+Status: Active in Database
+"""
+            
             logging.info(f"Broadcasting to Telegram: {ticker} {direction_text}")
-            success = self.telegram_bot.send_message(alert_msg)
+            success = self.telegram_bot.send_message(alert_msg.strip())
             if success:
                 logging.info(f"✅ Telegram broadcast sent for {ticker}-{interval} {direction_text}")
                 # Send to observation channel
                 self.telegram_bot.send_to_observation_channel(alert_msg.strip())
                 # Record this broadcast to dedup future attempts
                 self._record_broadcast(ticker, interval, direction, entry)
-                
-                # ═══════════════════════════════════════════════════════════════════
-                # LOG FORENSIC DATA FOR DEBUGGING AND VALIDATION
-                # ═══════════════════════════════════════════════════════════════════
-                try:
-                    # Extract strategy version
-                    model_version = signal_data.get('model_version', 'unknown')
-                    strategy_version = 'v2' if 'v2' in model_version.lower() else 'v1'
-                    
-                    # Extract indicator data if available
-                    import json
-                    feature_snapshot = signal_data.get('feature_snapshot', {})
-                    if isinstance(feature_snapshot, str):
-                        try:
-                            feature_snapshot = json.loads(feature_snapshot)
-                        except:
-                            feature_snapshot = {}
-                    
-                    # Extract forensic fields
-                    forensics = {
-                        'signal_id': signal_id,
-                        'timestamp': signal_data.get('timestamp', datetime.utcnow().isoformat()),
-                        'ticker': ticker,
-                        'interval': interval,
-                        'strategy_version': strategy_version,
-                        'model_version': model_version,
-                        'price': entry,
-                        'ema21': feature_snapshot.get('ema_21'),
-                        'ema100_4h': feature_snapshot.get('ema_100_4h'),
-                        'rsi14': feature_snapshot.get('rsi_14'),
-                        'is_bull_engulf': feature_snapshot.get('is_bull_engulf', 0),
-                        'is_bear_engulf': feature_snapshot.get('is_bear_engulf', 0),
-                        'daily_bull': feature_snapshot.get('daily_bull', 0),
-                        'daily_bear': feature_snapshot.get('daily_bear', 0),
-                        'sl_distance_pips': sl_pips,
-                        'tp_distance_pips': tp_pips,
-                    }
-                    
-                    self.db.insert_signal_forensics(**forensics)
-                    logging.debug(f"[FORENSICS] Logged broadcast data for signal_id={signal_id}")
-                except Exception as e:
-                    logging.warning(f"[FORENSICS] Failed to log signal forensics: {e}")
-                
                 # Mark signal as broadcasted in database
                 if signal_id:
                     try:
@@ -527,10 +431,6 @@ class PureStrategyEngine:
             # STEP 1: BUILD TRADE SIGNAL (Entry, SL, TP calculation)
             # ═══════════════════════════════════════════════════════════════════════
             logging.info(f"[PIPELINE_EXECUTION] LOG 3: Starting entry/SL/TP calculation via build_trade_signal()")
-            
-            # Extract metadata values if present
-            signal_bar_index = metadata.get('signal_bar_index') if metadata else None
-            
             trade_signal = build_trade_signal(
                 ticker=ticker,
                 interval=interval,
@@ -538,7 +438,6 @@ class PureStrategyEngine:
                 direction=direction,
                 strategy_name=strategy_name,
                 confidence=confidence,
-                signal_bar_index=signal_bar_index,
             )
             
             if trade_signal is None:
@@ -753,57 +652,6 @@ class PureStrategyEngine:
                 logging.error(f"Strategy V2 not available for {ticker}-{interval}")
                 return None
             evaluator = evaluate_v2
-        elif strategy_name == 'strategy_core_v3':
-            # V3 Strategy (logging-only mode during Phase 1)
-            if not STRATEGY_V3_AVAILABLE:
-                logging.debug(f"Strategy V3 not available for {ticker}-{interval}")
-                return None
-            
-            # Load OHLCV data first
-            df_ohlcv = self.get_latest_ohlcv(ticker, interval)
-            if df_ohlcv is None or len(df_ohlcv) < self.MIN_DATA_ROWS:
-                return None
-            
-            # Get V3 engine
-            v3_engine = self._get_v3_engine(ticker, interval)
-            if v3_engine is None:
-                return None
-            
-            try:
-                # Evaluate V3 strategy (logging-only, no trading)
-                v3_score, v3_signals = v3_engine.evaluate(df_ohlcv)
-                pip_size = self._get_pip_size(ticker)
-                
-                # Log V3 evaluation
-                logging.info(
-                    f"[V3_LOGGING] {ticker}-{interval} | "
-                    f"Score: {v3_score}/8 | "
-                    f"Signals: {v3_signals} | "
-                    f"PipSize: {pip_size}"
-                )
-                
-                # Log to database forensics
-                if v3_signals and len(v3_signals) > 0:
-                    for sig in v3_signals:
-                        try:
-                            self.db.log_signal_forensic(
-                                ticker=ticker,
-                                interval=interval,
-                                score=v3_score,
-                                compression=sig.get('compression', 0),
-                                adx_slope_ok=sig.get('adx_slope_ok', 0),
-                                hidden_div=sig.get('hidden_div', 0),
-                                confluence_score=v3_score,
-                            )
-                        except Exception as e:
-                            logging.debug(f"[V3_LOGGING] Failed to log forensics: {e}")
-                
-                # Phase 1: Logging-only (return None to prevent actual signal generation)
-                return None
-                
-            except Exception as e:
-                logging.error(f"[V3] Evaluation error for {ticker}-{interval}: {e}")
-                return None
         else:
             logging.error(f"Unknown strategy: {strategy_name}")
             return None
@@ -835,16 +683,10 @@ class PureStrategyEngine:
         if core_signal is None or core_signal == 0:
             return None
         
-        # ═══════════════════════════════════════════════════════════════════════════════
-        # EVENT-ONLY FILTER: Only emit signals triggered by market events
-        # ═══════════════════════════════════════════════════════════════════════════════
-        # If no event triggered this evaluation, do NOT emit a signal
-        # (No time-based scheduled signals allowed)
-        if event is None:
-            return None
-        
         # UNIFIED PIPELINE: Call execute_trade_pipeline() for all signal construction
         source_identifier = "v1_event" if strategy_name == "strategy_core_v1" else "v2_event"
+        if event is None:
+            source_identifier = "v1_scheduled" if strategy_name == "strategy_core_v1" else "v2_scheduled"
         
         signal_data = self.execute_trade_pipeline(
             ticker=ticker,
@@ -862,36 +704,40 @@ class PureStrategyEngine:
         
         
         # Log event signal generation
-        event_payload = self._event_payload(event)
-        self._log_event_debug({
-            'phase': 'event_signal_generated',
-            'strategy': strategy_name,
-            'event': event_payload,
-            'trigger_metadata': trigger_metadata,
-            'signal': {
-                'signal': signal_data['signal'],
-                'confidence': signal_data['confidence'],
-                'timestamp': signal_data['timestamp'],
-                'trade_construction': {
-                    'entry_price': signal_data['entry_price'],
-                    'stop_loss': signal_data['stop_loss'],
-                    'take_profit': signal_data['take_profit'],
-                    'risk_reward': signal_data['risk_reward'],
-                }
-            },
-        })
-        self._last_event_key = event_payload['id']
-        self._last_event_result = signal_data
+        if event is not None:
+            event_payload = self._event_payload(event)
+            self._log_event_debug({
+                'phase': 'event_signal_generated',
+                'strategy': strategy_name,
+                'event': event_payload,
+                'trigger_metadata': trigger_metadata,
+                'signal': {
+                    'signal': signal_data['signal'],
+                    'confidence': signal_data['confidence'],
+                    'timestamp': signal_data['timestamp'],
+                    'trade_construction': {
+                        'entry_price': signal_data['entry_price'],
+                        'stop_loss': signal_data['stop_loss'],
+                        'take_profit': signal_data['take_profit'],
+                        'risk_reward': signal_data['risk_reward'],
+                    }
+                },
+            })
+            self._last_event_key = event_payload['id']
+            self._last_event_result = signal_data
         
         # Trigger context
         trigger_context: Dict[str, Any] = {
-            'type': 'event',
+            'type': 'event' if event is not None else 'schedule',
             'metadata': trigger_metadata,
         }
-        event_payload = self._event_payload(event)
-        trigger_context['event_id'] = event_payload['id']
-        trigger_context['event'] = event_payload
-        signal_data['triggered_by'] = f"event:{event.event_type}"
+        if event is not None:
+            event_payload = self._event_payload(event)
+            trigger_context['event_id'] = event_payload['id']
+            trigger_context['event'] = event_payload
+            signal_data['triggered_by'] = f"event:{event.event_type}"
+        else:
+            signal_data['triggered_by'] = 'schedule'
         
         signal_data['trigger_context'] = trigger_context
         return signal_data
@@ -1204,67 +1050,24 @@ class PureStrategyEngine:
                         pass  # Never let tracker crash signal flow
                     
         if STRATEGY_V2_AVAILABLE:
-            # V2: Use stateful engine for persistent RSI sequence tracking
-            try:
-                from core.strategy_core_v2 import SignalEngine as SignalEngineV2, get_timeframe_config
-                
-                # Load persisted state
-                persisted_state = self.db.load_strategy_state(
-                    ticker=event.ticker,
-                    interval=event.interval,
-                    strategy_name='strategy_core_v2'
-                )
-                
-                # Create stateful engine
-                v2_config = get_timeframe_config(event.interval)
-                v2_engine = SignalEngineV2(event.ticker, event.interval, v2_config)
-                
-                # Get OHLCV data
-                df_ohlcv = self.get_latest_ohlcv(event.ticker, event.interval)
-                
-                if df_ohlcv is not None and len(df_ohlcv) >= 120:
-                    # Advance state through new bars
-                    core_signal, updated_state, confirmation_result, signal_bar_idx = v2_engine.advance_state(
-                        df_ohlcv=df_ohlcv,
-                        persisted_state=persisted_state,
-                        last_processed_bar_time=persisted_state.get('last_processed_bar_time') if persisted_state else None
-                    )
+            signal_v2 = self.generate_signal(
+                event.ticker,
+                event.interval,
+                'strategy_core_v2',
+                event=event,
+                metadata=sanitized_metadata,
+            )
+            if signal_v2 is not None:
+                triggered_signals.append(signal_v2)
+                if persist:
+                    self.save_signal(signal_v2)
                     
-                    # Save updated state
-                    self.db.save_strategy_state(
-                        event.ticker, 
-                        event.interval, 
-                        'strategy_core_v2', 
-                        updated_state
-                    )
-                    
-                    # If signal generated, process it through trade pipeline
-                    if core_signal != 0 and core_signal is not None:
-                        signal_v2 = self.execute_trade_pipeline(
-                            ticker=event.ticker,
-                            interval=event.interval,
-                            strategy_name='strategy_core_v2',
-                            direction=int(core_signal),
-                            df_ohlcv=df_ohlcv,
-                            confidence=0.95,
-                            source='v2_event_stateful',
-                            metadata=sanitized_metadata,
-                        )
-                        
-                        if signal_v2 is not None:
-                            triggered_signals.append(signal_v2)
-                            if persist:
-                                self.save_signal(signal_v2)
-                                
-                                # Track V2 persistence in pipeline
-                                try:
-                                    signal_id = f"{signal_v2['ticker']}|{event.interval}|{signal_v2['timestamp']}|v2"
-                                    get_tracker().mark_persisted(signal_id=signal_id)
-                                except Exception:
-                                    pass  # Never let tracker crash signal flow
-            except Exception as e:
-                logging.error(f"[V2_STATEFUL] Error processing event for {event.ticker}-{event.interval}: {e}")
-
+                    # Track V2 persistence in pipeline
+                    try:
+                        signal_id = f"{signal_v2['ticker']}|{event.interval}|{signal_v2['timestamp']}|v2"
+                        get_tracker().mark_persisted(signal_id=signal_id)
+                    except Exception:
+                        pass  # Never let tracker crash signal flow
 
         if not triggered_signals:
             self._log_event_debug(

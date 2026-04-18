@@ -37,8 +37,7 @@ def validate_trade_signal(signal: TradeSignal) -> bool:
     """
     
     # Rule 1: Risk-reward must be at least 2.0 (1:2)
-    # Allow for floating-point precision
-    if signal.risk_reward < (2.0 - 1e-4):
+    if signal.risk_reward < 2.0:
         signal.status = "REJECTED"
         signal.rejection_reason = (
             f"Risk-reward too low: {signal.risk_reward:.2f}:1 < 2.0:1"
