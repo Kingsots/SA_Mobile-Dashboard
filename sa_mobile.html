@@ -1769,9 +1769,9 @@ body::before {
   </div>
 
       <div class="stats-grid" id="pulse-stats">
-        <div class="stat-cell"><div class="stat-val" id="stat-pulse-winrate">—</div><div class="stat-label">Win Rate</div></div>
-        <div class="stat-cell"><div class="stat-val" id="stat-pulse-pnl" style="color:var(--teal)">—</div><div class="stat-label">Net P&amp;L</div></div>
-        <div class="stat-cell"><div class="stat-val" id="stat-pulse-count">—</div><div class="stat-label">Signals</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-winrate">—</div><div class="stat-label">Outcome Rate</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-pnl" style="color:var(--teal)">—</div><div class="stat-label">Movement Capture</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-count">—</div><div class="stat-label">Events</div></div>
         <div class="stat-cell"><div class="stat-val" id="stat-pulse-rr">—</div><div class="stat-label">Avg R:R</div></div>
       </div>
 
@@ -1802,9 +1802,9 @@ body::before {
   </div>
 
       <div class="stats-grid" id="rift-stats">
-        <div class="stat-cell"><div class="stat-val" id="stat-rift-winrate">—</div><div class="stat-label">Win Rate</div></div>
-        <div class="stat-cell"><div class="stat-val" id="stat-rift-pnl" style="color:var(--teal)">—</div><div class="stat-label">Net P&amp;L</div></div>
-        <div class="stat-cell"><div class="stat-val" id="stat-rift-count">—</div><div class="stat-label">Signals</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-winrate">—</div><div class="stat-label">Outcome Rate</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-pnl" style="color:var(--teal)">—</div><div class="stat-label">Movement Capture</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-count">—</div><div class="stat-label">Events</div></div>
         <div class="stat-cell"><div class="stat-val" id="stat-rift-rr">—</div><div class="stat-label">Avg R:R</div></div>
       </div>
 
@@ -2653,7 +2653,7 @@ async function loadSignals(engine) {
 
     const wrEl = document.getElementById(`stat-${prefix}-winrate`);
     wrEl.textContent = `${winRate}%`;
-    wrEl.style.color = 'var(--ink-1)';
+    wrEl.style.color = 'var(--ink)';
     document.getElementById(`stat-${prefix}-pnl`).textContent   = `${netPnl >= 0 ? '+' : ''}${netPnl}%`;
     document.getElementById(`stat-${prefix}-count`).textContent = total;
     document.getElementById(`stat-${prefix}-rr`).textContent    = avg_rr > 0 ? avg_rr.toFixed(2) : '—';
@@ -2685,55 +2685,87 @@ async function loadSignals(engine) {
 }
 
 function buildSignalRow(s, outcome) {
-  const pct  = s.running_pct != null ? s.running_pct : s.result_pct;
-  const pctStr = pct != null ? `${pct > 0 ? '+' : ''}${pct}%` : '—';
-  const pctColor = pct > 0 ? 'var(--teal)' : pct < 0 ? 'var(--red)' : 'var(--ink-2)';
-  const outcomeClass = outcome === 'TP_HIT' ? 'tp' : outcome === 'SL_HIT' ? 'sl' : outcome === 'NO_FILL' ? 'nofill' : 'run';
-  const outcomeLabel = outcome === 'TP_HIT' ? '✓ TARGET HIT' : outcome === 'SL_HIT' ? '✗ STOPPED' : outcome === 'NO_FILL' ? '○ NO FILL' : '● RUNNING';
-  const dir = s.direction || '—';
+  const pct      = s.running_pct != null ? s.running_pct : s.result_pct;
+  const pctStr   = pct != null ? `${pct > 0 ? '+' : ''}${pct}%` : '—';
+  const pctColor = pct > 0 ? 'var(--teal)'
+                 : pct < 0 ? 'var(--red)' : 'var(--ink-2)';
+
+  const outcomeClass = outcome === 'TP_HIT'  ? 'tp'
+                     : outcome === 'SL_HIT'  ? 'sl'
+                     : outcome === 'NO_FILL' ? 'nofill' : 'run';
+
+  const outcomeLabel = outcome === 'TP_HIT'  ? '✓ TARGET HIT'
+                     : outcome === 'SL_HIT'  ? '✗ STOPPED'
+                     : outcome === 'NO_FILL' ? '○ NO FILL'
+                     : '● RUNNING';
+
+  const dir      = s.direction || '—';
+  const dirLabel = dir === 'BUY' ? 'Bullish Bias' : 'Bearish Bias';
+  const dirClass = dir === 'BUY' ? 'buy' : 'sell';
+
   const entryStr = s.entry ? formatPrice(s.entry) : '—';
   const tpStr    = s.tp    ? formatPrice(s.tp)    : '—';
+
   const engineBadge = s.strategy && s.strategy !== 'Unknown'
-    ? `<span class="signal-engine-badge" data-engine="${s.strategy}">${s.strategy}</span>`
+    ? `<span class="signal-engine-badge"
+            data-engine="${s.strategy}">${s.strategy}</span>`
     : '';
 
   let fireCtxBlock = '';
   if (s.ctx_compression != null) {
     const firePressure = s.ctx_pressure_state || 'LOW';
-    const sweepStr  = s.ctx_sweep === 1 ? 'YES' : s.ctx_sweep === 0 ? 'NO' : null;
-    const sweepPart = sweepStr != null ? ` · Sweep ${sweepStr}` : '';
-    const line1 = `Fired at: Pressure ${firePressure} · RSI ${s.ctx_rsi_stage || '—'}${sweepPart}`;
+    const sweepStr     = s.ctx_sweep === 1 ? 'YES'
+                       : s.ctx_sweep === 0 ? 'NO' : null;
+    const sweepPart    = sweepStr != null
+      ? ` · Sweep Interaction: ${sweepStr}` : '';
+    const line1 = `Context at observation: ` +
+                  `Pressure ${firePressure} · ` +
+                  `Momentum Stage ${s.ctx_rsi_stage || '—'}` +
+                  `${sweepPart}`;
 
-    // Phase 3 wick intelligence — only shown when captured at fire time
     let line2 = '';
     if (s.ctx_rejection != null) {
-      const rej  = s.ctx_rejection.toFixed(2);
-      const bq   = s.ctx_breakout  != null ? s.ctx_breakout.toFixed(2)  : '—';
-      const bc   = s.ctx_body      != null ? s.ctx_body.toFixed(2)      : '—';
-      const sp   = s.ctx_sweep_prob != null ? s.ctx_sweep_prob.toFixed(2) : '—';
-      const spClass = (s.ctx_sweep_prob || 0) >= 0.70 ? ' ctx-sweep-warn' : '';
+      const rej = s.ctx_rejection.toFixed(2);
+      const bq  = s.ctx_breakout  != null
+        ? s.ctx_breakout.toFixed(2)  : '—';
+      const bc  = s.ctx_body      != null
+        ? s.ctx_body.toFixed(2)      : '—';
+      const sp  = s.ctx_sweep_prob != null
+        ? s.ctx_sweep_prob.toFixed(2) : '—';
+      const spClass = (s.ctx_sweep_prob || 0) >= 0.70
+        ? ' ctx-sweep-warn' : '';
       line2 = `<span class="signal-fire-ctx-wick">` +
-              `Rej ${rej} · BQ ${bq} · Body ${bc} · ` +
-              `SP <span class="${spClass}">${sp}</span>` +
+              `Rejection ${rej} · ` +
+              `Quality ${bq} · ` +
+              `Body Strength ${bc} · ` +
+              `Sweep Risk <span class="${spClass}">${sp}</span>` +
               `</span>`;
     }
 
-    fireCtxBlock = `<div class="signal-fire-ctx">${line1}${line2 ? '<br>' + line2 : ''}</div>`;
+    fireCtxBlock = `<div class="signal-fire-ctx">` +
+                   `${line1}` +
+                   `${line2 ? '<br>' + line2 : ''}` +
+                   `</div>`;
   }
 
   return `
-    <div class="signal-row" data-outcome="${outcome}" data-ticker="${s.ticker}">
+    <div class="signal-row" data-outcome="${outcome}"
+         data-ticker="${s.ticker}">
       <div class="signal-row-left">
         <div class="signal-row-ticker">${s.ticker}</div>
         <div class="signal-row-dir">
-          <span class="${dir === 'BUY' ? 'buy' : 'sell'}">${dir}</span>
-          &nbsp;·&nbsp;${s.interval || '—'}&nbsp;·&nbsp;${entryStr} → ${tpStr}
+          <span class="${dirClass}">${dirLabel}</span>
+          &nbsp;·&nbsp;${s.interval || '—'}
+          &nbsp;·&nbsp;${entryStr} → ${tpStr}
         </div>
         ${engineBadge}
       </div>
       <div class="signal-row-right">
-        <div class="signal-row-pct" style="color:${pctColor}">${pctStr}</div>
-        <div class="signal-row-status ${outcomeClass}">${outcomeLabel}</div>
+        <div class="signal-row-pct"
+             style="color:${pctColor}">${pctStr}</div>
+        <div class="signal-row-status ${outcomeClass}">
+          ${outcomeLabel}
+        </div>
       </div>
       ${fireCtxBlock}
     </div>`;
