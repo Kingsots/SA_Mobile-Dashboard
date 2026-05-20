@@ -371,7 +371,7 @@ body::before {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
   margin-bottom: 8px;
 }
@@ -427,7 +427,7 @@ body::before {
 .state-cell {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
@@ -666,7 +666,7 @@ body::before {
 .stat-cell {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
 }
 .stat-val {
@@ -697,7 +697,7 @@ body::before {
 .signal-row {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 14px 16px;
   margin: 0 20px 6px;
   cursor: pointer;
@@ -861,7 +861,7 @@ body::before {
   margin: 16px 20px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
 }
 .intel-note-label {
@@ -882,7 +882,7 @@ body::before {
   margin: 12px 20px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
 }
 .feed-card--pinned {
@@ -920,7 +920,7 @@ body::before {
   margin: 0 20px 20px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 20px;
 }
 .profile-avatar {
@@ -1098,11 +1098,25 @@ body::before {
   line-height: 1;
   margin-bottom: 6px;
 }
+.metric-bar {
+  height: 3px;
+  background: var(--surface-3);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: var(--sp-1);
+}
+.metric-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+.metric-bar-fill.comp { background: var(--gold); }
+.metric-bar-fill.exp  { background: var(--teal); }
 .deep-signal-card {
   margin: 0 20px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 16px;
 }
 .deep-levels {
@@ -1337,7 +1351,7 @@ body::before {
   margin: 0 16px 10px;
   padding: 14px;
   background: var(--surface);
-  border-radius: 10px;
+  border-radius: 6px;
   border-left: 4px solid var(--ink-3);
 }
 .pw-card[data-state="EXTREME"] { border-left-color: var(--red); }
