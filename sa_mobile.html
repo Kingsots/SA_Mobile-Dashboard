@@ -2716,7 +2716,7 @@ function renderResolverStrip(data) {
   strip.innerHTML = data.feed.map(f => {
     const positive = f.result_pct > 0;
     return `
-      <div class="resolver-pill" data-action="goto-signals">
+      <div class="resolver-pill" data-action="goto-signals" data-ticker="${f.ticker}">
         <div class="resolver-pill-dot" style="background:${positive ? 'var(--teal)' : 'var(--red)'}"></div>
         <span class="resolver-pill-text">${f.ticker} ${f.direction}</span>
         <span class="resolver-pill-pct" style="color:${positive ? 'var(--teal)' : 'var(--red)'}">${positive ? '+' : ''}${f.result_pct}%</span>
@@ -3510,7 +3510,7 @@ function attachDelegatedListeners() {
 
     // Resolver pill goto signals
     const rp = el.closest('.resolver-pill');
-    if (rp && rp.dataset.action === 'goto-signals') { goTo('pulse', document.querySelector('[data-screen=pulse]')); return; }
+    if (rp && rp.dataset.action === 'goto-signals') { const sym = rp.dataset.ticker || rp.dataset.symbol; if (sym) openDeepView(sym); return; }
   }, false);
 }
 // ── PRESSURE WATCH ──────────────────────────────────────
