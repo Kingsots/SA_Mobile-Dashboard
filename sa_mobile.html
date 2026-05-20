@@ -2803,9 +2803,16 @@ function renderWatchlistGroups(data, query) {
   const q = query.toLowerCase();
 
   const groupOrder = ['COMPRESSION','TRENDING','EMERGING','EXHAUSTED','NEUTRAL'];
+  const groupLabels = {
+    COMPRESSION: 'COMPRESSION SETUPS',
+    TRENDING:    'TRENDING',
+    EMERGING:    'EMERGING SETUPS',
+    EXHAUSTED:   'EXHAUSTION RISK',
+    NEUTRAL:     'NEUTRAL'
+  };
   const groupIcons = {
-    COMPRESSION: '⬛', TRENDING: '⬆', EMERGING: '↗',
-    EXHAUSTED: '⬇', NEUTRAL: '◻'
+    COMPRESSION: '◈', TRENDING: '▲', EMERGING: '◆',
+    EXHAUSTED: '▽', NEUTRAL: '◇'
   };
 
   let html = '';
@@ -2826,7 +2833,7 @@ function renderWatchlistGroups(data, query) {
       <div class="watch-group">
         <div class="watch-group-header">
           <span class="watch-group-icon">${groupIcons[g]}</span>
-          <span class="watch-group-name">${g}</span>
+          <span class="watch-group-name">${groupLabels[g] || g}</span>
           <span class="watch-group-count">${assets.length}</span>
         </div>
         <div class="watch-chips">
@@ -2840,7 +2847,8 @@ function renderWatchlistGroups(data, query) {
 
 function buildWatchChip(a, state) {
   const pct = a.context?.compression;
-  const pctStr = pct != null ? `${(pct * 100).toFixed(0)}%` : '';
+  const pctStr = pct != null
+    ? `Vol ${(pct * 100).toFixed(0)}%` : '';
 
   return `
     <button class="watch-chip" data-state="${state}" data-symbol="${a.symbol}">
