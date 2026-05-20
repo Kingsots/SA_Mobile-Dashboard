@@ -1,0 +1,3513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0a0a">
+<title>Silent Analyst</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+/* ── TOKENS ──────────────────────────────────────────── */
+:root {
+  /* Backgrounds */
+  --bg:         #0a0a0a;
+  --surface:    #111111;
+  --surface-2:  #181818;
+  --surface-3:  #1e1e1e;
+
+  /* Borders */
+  --border:       #242424;
+  --border-2:     #2a2a2a;
+  --border-faint: #1a1a1a;
+
+  /* Gold — intelligence accent */
+  --gold:       #c9a84c;
+  --gold-dim:   #7a6530;
+  --gold-glow:  rgba(201,168,76,0.15);
+  --gold-bg:    #1a1508;
+
+  /* Teal — active state only */
+  --teal:       #2dd4bf;
+  --teal-dim:   #0d6e65;
+  --teal-glow:  rgba(45,212,191,0.12);
+  --teal-bg:    #050f0e;
+
+  /* Semantic states */
+  --red:          #ef4444;
+  --red-dim:      #6b2424;
+  --red-glow:     rgba(239,68,68,0.12);
+  --green:        #22c55e;
+  --state-warn:   #f59e0b;
+  --state-emerging: #4caf7d;
+
+  /* Text */
+  --ink:          #e8e4d9;
+  --ink-2:        #9c9489;
+  --ink-3:        #5c5852;
+  --ink-disabled: #3a3836;
+
+  /* Typography */
+  --font-display: 'Sora', sans-serif;
+  --font-mono:    'IBM Plex Mono', monospace;
+  --font-body:    'IBM Plex Sans', sans-serif;
+
+  /* Spacing scale */
+  --sp-1:   4px;
+  --sp-2:   8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* Layout */
+  --nav-h:       64px;
+  --safe-bottom: env(safe-area-inset-bottom, 12px);
+}
+
+/* ── RESET ───────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overscroll-behavior: none; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button { background: none; border: none; cursor: pointer; color: inherit; font: inherit; }
+input { background: none; border: none; outline: none; color: inherit; font: inherit; }
+* { -webkit-tap-highlight-color: transparent; }
+
+/* ── GRAIN OVERLAY ───────────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  opacity: 0.4;
+  pointer-events: none;
+  z-index: 999;
+}
+
+/* ── APP SHELL ───────────────────────────────────────── */
+#app {
+  position: fixed; inset: 0;
+  max-width: 430px; margin: 0 auto;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── LOGIN ───────────────────────────────────────────── */
+#login {
+  position: fixed; inset: 0;
+  max-width: 430px; margin: 0 auto;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 32px;
+  z-index: 500;
+  transition: opacity 0.4s ease;
+}
+#login.hidden { opacity: 0; pointer-events: none; }
+
+.login-logo {
+  font-family: var(--font-display);
+  font-size: 36px;
+  letter-spacing: 2px;
+  margin-bottom: 6px;
+}
+.login-logo span { color: var(--gold); }
+.login-sub {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 48px;
+}
+.login-card {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+}
+.login-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.login-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  transition: border-color 0.2s;
+}
+.login-input-wrap:focus-within { border-color: var(--gold-dim); }
+.login-input-wrap input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.login-input-wrap input::placeholder { color: var(--ink-3); letter-spacing: 1px; }
+.login-btn {
+  width: 100%;
+  background: var(--gold);
+  color: var(--bg);
+  border-radius: 8px;
+  padding: 14px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 2px;
+  transition: opacity 0.2s;
+}
+.login-btn:active { opacity: 0.8; }
+.login-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.login-error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--red);
+  text-align: center;
+  margin-top: 12px;
+  min-height: 16px;
+}
+
+/* ── TOP BAR ─────────────────────────────────────────── */
+#topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px 10px;
+  flex-shrink: 0;
+}
+.topbar-logo {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 1px;
+}
+.topbar-logo span { color: var(--gold); }
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+.live-badge {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--teal);
+  letter-spacing: 1px;
+}
+.live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+.bell-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-2);
+}
+
+/* ── SCREENS ─────────────────────────────────────────── */
+#screens {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+.screen {
+  position: absolute; inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + 16px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.screen.active {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* ── BOTTOM NAV ─────────────────────────────────────── */
+#nav {
+  display: flex;
+  height: var(--nav-h);
+  padding-bottom: var(--safe-bottom);
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.nav-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  color: var(--ink-3);
+  transition: color 0.15s ease;
+  padding-bottom: 2px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.nav-tab:hover { color: var(--ink-2); }
+
+.nav-tab.active {
+  color: var(--gold);
+}
+
+.nav-tab svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.nav-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* ── SCREEN HEADERS ─────────────────────────────────── */
+.screen-header {
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+  border-bottom: 1px solid var(--border-faint);
+  margin-bottom: var(--sp-4);
+}
+
+.screen-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+}
+
+.screen-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+}
+
+.screen-title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  line-height: 1.1;
+  margin-bottom: var(--sp-2);
+}
+
+.screen-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
+}
+
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--teal);
+  text-transform: uppercase;
+}
+
+.live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--teal);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* Keep .section-eyebrow alias for drawer
+   and deepview references — do not remove */
+.section-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold-dim);
+  margin-bottom: var(--sp-2);
+}
+
+/* ── CARDS ───────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 8px;
+}
+.card.tappable { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.card.tappable:active { background: var(--surface-2); border-color: var(--border-2); }
+
+/* ── RESOLVER STRIP ──────────────────────────────────── */
+#resolver-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 20px 16px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex-shrink: 0;
+}
+#resolver-strip::-webkit-scrollbar { display: none; }
+.resolver-pill {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.resolver-pill:active { border-color: var(--gold-dim); }
+.resolver-pill-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+.resolver-pill-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.resolver-pill-pct {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--teal);
+}
+
+/* ── STATE GRID ──────────────────────────────────────── */
+.state-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 20px 16px;
+}
+.state-cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.state-cell::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--state-color, var(--border));
+}
+.state-cell:active { background: var(--surface-2); }
+.state-cell[data-state="COMPRESSION"] { --state-color: var(--gold); }
+.state-cell[data-state="TRENDING"]    { --state-color: var(--teal); }
+.state-cell[data-state="EMERGING"]    { --state-color: var(--state-emerging); }
+.state-cell[data-state="EXHAUSTED"]   { --state-color: var(--red); }
+.state-num {
+  font-family: var(--font-display);
+  font-size: 40px;
+  line-height: 1;
+  color: var(--state-color, var(--ink));
+  margin-bottom: 4px;
+}
+.state-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.state-sub {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+
+/* ── TIMEFRAME FILTERS ───────────────────────────────── */
+.filter-row {
+  display: flex;
+  gap: 6px;
+  padding: 0 20px 16px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filter-row::-webkit-scrollbar { display: none; }
+.filter-btn {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+  transition: all 0.15s;
+}
+.filter-btn.active {
+  background: var(--gold-glow);
+  border-color: var(--gold-dim);
+  color: var(--gold);
+}
+
+/* ── ASSET CARDS ─────────────────────────────────────── */
+.asset-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: var(--sp-4);
+  margin: 0 var(--sp-5) var(--sp-2);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+.asset-card::before {
+  content: '';
+  position: absolute; top: 0; left: 0;
+  width: 4px; height: 100%;
+  background: var(--state-color, var(--border));
+}
+.asset-card:active { background: var(--surface-2); }
+.asset-card[data-state="COMPRESSION"] { --state-color: var(--gold); }
+.asset-card[data-state="TRENDING"]    { --state-color: var(--teal); }
+.asset-card[data-state="EMERGING"]    { --state-color: var(--state-emerging); }
+.asset-card[data-state="EXHAUSTED"]   { --state-color: var(--red); }
+.asset-card[data-state="NEUTRAL"]     { --state-color: var(--border-2); }
+
+.asset-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+}
+.asset-symbol-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.asset-symbol {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+}
+.asset-interval {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
+}
+.asset-badge-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-1);
+}
+.asset-state-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--state-color, var(--ink-3));
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--state-color, var(--border));
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.asset-pressure-badge {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.asset-pressure-badge.pressure-low {
+  color: var(--ink-3);
+  border-color: var(--border);
+}
+.asset-pressure-badge.pressure-rising {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+.asset-pressure-badge.pressure-high {
+  color: var(--state-warn);
+  border-color: rgba(245,158,11,0.3);
+}
+.asset-pressure-badge.pressure-extreme {
+  color: var(--red);
+  border-color: var(--red-dim);
+}
+.sweep-chip {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: var(--state-warn);
+  padding: 2px 5px;
+  border: 1px solid rgba(245,158,11,0.35);
+  border-radius: 3px;
+}
+
+/* 4-cell metrics grid */
+.asset-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-faint);
+}
+.asset-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.asset-metric-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.asset-metric-val {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.asset-metric-val.sweep-yes { color: var(--state-warn); }
+.asset-metric-val.sweep-no  { color: var(--ink-3); }
+
+.asset-signal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: var(--sp-2);
+}
+.signal-dir-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 3px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.signal-dir-badge.buy  {
+  background: var(--teal-glow);
+  color: var(--teal);
+}
+.signal-dir-badge.sell {
+  background: var(--red-glow);
+  color: var(--red);
+}
+.signal-running {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+.positive { color: var(--teal); }
+.negative { color: var(--red); }
+.neutral  { color: var(--ink-2); }
+
+/* ── STATS HEADER GRID ───────────────────────────────── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 20px 16px;
+}
+.stat-cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.stat-val {
+  font-family: var(--font-display);
+  font-size: 32px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* ── SIGNAL ROWS ─────────────────────────────────────── */
+.signal-section-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  padding: 0 20px;
+  margin-bottom: 8px;
+  margin-top: 4px;
+}
+.signal-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 0 20px 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  position: relative; overflow: hidden;
+}
+.signal-row::before {
+  content: '';
+  position: absolute; left: 0; top: 0;
+  width: 3px; height: 100%;
+  background: var(--accent-color, var(--border));
+}
+.signal-row[data-outcome="TP_HIT"]  { --accent-color: var(--teal); }
+.signal-row[data-outcome="SL_HIT"]  { --accent-color: var(--red); }
+.signal-row[data-outcome="RUNNING"] { --accent-color: var(--gold); }
+.signal-row[data-outcome="EXPIRY"]  { --accent-color: var(--ink-3); }
+.signal-row[data-outcome="NO_FILL"] { --accent-color: var(--ink-3); }
+.signal-row:active { background: var(--surface-2); }
+
+.signal-row-left {}
+.signal-row-ticker {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+.signal-row-dir {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+.signal-row-dir span {
+  font-weight: 500;
+}
+.signal-row-dir span.buy  { color: var(--teal); }
+.signal-row-dir span.sell { color: var(--red); }
+
+.signal-row-right { text-align: right; }
+.signal-row-pct {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+.signal-row-status {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.signal-row-status.tp { color: var(--teal); }
+.signal-row-status.sl { color: var(--red); }
+.signal-row-status.run    { color: var(--gold); }
+.signal-row-status.nofill { color: var(--ink-3); }
+
+.signal-engine-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: var(--ink-2);
+  background: rgba(255, 255, 255, 0.04);
+  margin-top: 5px;
+}
+.signal-engine-badge[data-engine="Pulse"] { color: var(--teal); }
+.signal-engine-badge[data-engine="Rift"]  { color: var(--gold); }
+.signal-fire-ctx {
+  flex-basis: 100%;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.5px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+}
+
+/* ── WATCHLIST ───────────────────────────────────────── */
+.search-wrap {
+  margin: 0 20px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex; align-items: center; gap: 10px;
+  transition: border-color 0.2s;
+}
+.search-wrap:focus-within { border-color: var(--border-2); }
+.search-wrap svg { color: var(--ink-3); flex-shrink: 0; }
+.search-wrap input {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+.search-wrap input::placeholder { color: var(--ink-3); }
+
+.watch-group { margin-bottom: 20px; }
+.watch-group-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 20px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.watch-group-icon {
+  font-size: 12px;
+}
+.watch-group-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  flex: 1;
+}
+.watch-group-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+.watch-chips {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 0 20px;
+}
+.watch-chip {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+.watch-chip:active {
+  background: var(--surface-2);
+  transform: scale(0.97);
+}
+.watch-chip-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.watch-chip[data-state="COMPRESSION"] .watch-chip-dot { background: var(--gold); }
+.watch-chip[data-state="TRENDING"]    .watch-chip-dot { background: var(--teal); }
+.watch-chip[data-state="EMERGING"]    .watch-chip-dot { background: var(--state-emerging); }
+.watch-chip[data-state="EXHAUSTED"]   .watch-chip-dot { background: var(--red); }
+.watch-chip[data-state="NEUTRAL"]     .watch-chip-dot { background: var(--ink-3); }
+.watch-chip-pct {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.intel-note {
+  margin: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.intel-note-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--gold);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.intel-note-text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+.feed-card {
+  margin: 12px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.feed-card--pinned {
+  border-left: 3px solid var(--gold);
+}
+.feed-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.feed-card-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--gold);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.feed-card-pin {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+}
+.feed-card-body {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+
+/* ── PROFILE ─────────────────────────────────────────── */
+.profile-hero {
+  display: flex; align-items: center; gap: 16px;
+  margin: 0 20px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.profile-avatar {
+  width: 48px; height: 48px;
+  background: var(--surface-3);
+  border: 1px solid var(--gold-dim);
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--gold);
+  flex-shrink: 0;
+}
+.profile-name {
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 1px;
+}
+.profile-tier {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--gold);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.pref-group { padding: 0 20px; margin-bottom: 24px; }
+.pref-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.pref-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.pref-item:active { background: var(--surface-2); }
+.pref-item-name {
+  font-family: var(--font-body);
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+.pref-item-desc {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.toggle {
+  width: 40px; height: 22px;
+  background: var(--surface-3);
+  border-radius: 11px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle.on { background: var(--gold); }
+.toggle::after {
+  content: '';
+  position: absolute;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  top: 3px; left: 3px;
+  transition: transform 0.2s;
+}
+.toggle.on::after { transform: translateX(18px); }
+
+.sys-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 6px;
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer;
+}
+.sys-item:active { background: var(--surface-2); }
+.sys-item-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ── DRAWERS ─────────────────────────────────────────── */
+.drawer-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.drawer-overlay.open { opacity: 1; pointer-events: all; }
+
+.drawer {
+  position: fixed;
+  bottom: 0; left: 50%;
+  transform: translate(-50%, 100%);
+  width: 100%; max-width: 430px;
+  background: var(--surface-2);
+  border-radius: 20px 20px 0 0;
+  z-index: 300;
+  max-height: 88vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+  padding-bottom: calc(var(--safe-bottom) + 16px);
+}
+.drawer.open { transform: translate(-50%, 0); }
+
+.drawer-handle {
+  width: 36px; height: 4px;
+  background: var(--border-2);
+  border-radius: 2px;
+  margin: 12px auto 0;
+}
+.drawer-header {
+  padding: 16px 20px 12px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.drawer-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  letter-spacing: 1px;
+}
+.drawer-close {
+  width: 32px; height: 32px;
+  background: var(--surface-3);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-2);
+  font-size: 18px;
+}
+
+/* Deep view specifics */
+.deep-context-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 20px;
+  margin-bottom: 16px;
+}
+.deep-ctx-cell {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.deep-ctx-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.deep-ctx-val {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+.deep-signal-card {
+  margin: 0 20px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.deep-levels {
+  display: flex; gap: 12px;
+  margin-bottom: 12px;
+}
+.deep-level { flex: 1; text-align: center; }
+.deep-level-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.deep-level-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+}
+.deep-level.entry .deep-level-val { color: var(--gold); }
+.deep-level.sl    .deep-level-val { color: var(--red); }
+.deep-level.tp    .deep-level-val { color: var(--teal); }
+
+.progress-track {
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+  background: linear-gradient(90deg, var(--red) 0%, var(--gold) 50%, var(--teal) 100%);
+  background-size: 200% 100%;
+}
+.progress-marker {
+  position: absolute; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 2px solid var(--bg);
+  transition: left 0.6s ease;
+}
+
+.deep-history-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.deep-history-row:last-child { border-bottom: none; }
+
+/* ── STATE DETAIL DRAWER ─────────────────────────────── */
+.state-detail-list { padding: 0 20px; }
+.state-detail-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.state-detail-row:last-child { border-bottom: none; }
+.state-detail-row:active { opacity: 0.7; }
+
+/* ── LOADING / EMPTY STATES ──────────────────────────── */
+.loading-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 20px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.spinner {
+  width: 14px; height: 14px;
+  border: 1.5px solid var(--border-2);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+}
+
+.footer-cap {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 1px;
+  text-align: center;
+  padding: 16px;
+  text-transform: uppercase;
+}
+
+/* ── RSI / SWEEP BADGES ──────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  text-transform: uppercase;
+}
+.badge.neutral { color: var(--ink-3); }
+.badge.bullish  { color: var(--teal); }
+.badge.bearish  { color: var(--red); }
+.badge.warning  { color: var(--gold); }
+
+/* ── PRESSURE WATCH ─────────────────────────────────── */
+.pw-summary-strip {
+  display: flex;
+  justify-content: space-around;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.pw-summary-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.pw-count {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--gold);
+}
+.pw-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+.pw-filters {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+.pw-pill {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--ink-3);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pw-pill.active {
+  background: var(--gold);
+  color: var(--bg);
+  border-color: var(--gold);
+}
+.pw-card {
+  margin: 0 16px 10px;
+  padding: 14px;
+  background: var(--surface);
+  border-radius: 10px;
+  border-left: 4px solid var(--ink-3);
+}
+.pw-card[data-state="EXTREME"] { border-left-color: var(--red); }
+.pw-card[data-state="HIGH"]    { border-left-color: var(--gold); }
+.pw-card[data-state="RISING"]  { border-left-color: var(--teal); }
+.pw-card[data-state="LOW"]     { border-left-color: var(--ink-3); }
+.pw-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.pw-ticker {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.pw-state-badge {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 700;
+}
+.pw-state-badge.EXTREME { background: var(--red);       color: var(--ink); }
+.pw-state-badge.HIGH    { background: var(--gold);      color: var(--bg); }
+.pw-state-badge.RISING  { background: var(--teal);      color: var(--bg); }
+.pw-state-badge.LOW     { background: var(--surface-3); color: var(--ink-3); }
+.pw-card-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.pw-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pw-field-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+.pw-field-value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+.pw-score-bar {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.pw-score-seg {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+}
+.pw-score-seg.filled { background: var(--gold); }
+.pw-score-seg.filled.s5 { background: var(--red); }
+.pw-sweep-chip {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: var(--state-warn);
+  margin-top: 6px;
+}
+.pw-sweep-high {
+  color: var(--state-warn);
+  font-weight: 700;
+}
+.pw-band-counts {
+  display: flex;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.pw-band-count {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pw-band-count-val {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--gold);
+}
+.pw-band-count-label {
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+.signal-fire-ctx-wick {
+  display: block;
+  font-size: 0.65rem;
+  color: var(--ink-3);
+  margin-top: 2px;
+  letter-spacing: 0.04em;
+}
+.ctx-sweep-warn {
+  color: var(--state-warn);
+  font-weight: 700;
+}
+
+/* ── DEEPVIEW DRAWER ─────────────────────────────── */
+.deepview-trigger {
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  transition: color 0.2s;
+}
+.deepview-trigger:hover,
+.deepview-trigger.active { color: var(--gold); }
+
+.deepview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 90;
+  transition: opacity 0.25s;
+}
+.deepview-overlay--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.deepview-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--ink-2);
+  max-height: 75vh;
+  overflow-y: auto;
+  transform: translateY(-100%);
+  transition: transform 0.30s cubic-bezier(0.4, 0, 0.2, 1);
+  padding-bottom: 24px;
+}
+.deepview-drawer--open  { transform: translateY(0); }
+.deepview-drawer--closed { transform: translateY(-100%); }
+
+.deepview-header {
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--ink-2);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+}
+.deepview-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.deepview-eyebrow {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-4);
+}
+.deepview-close {
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.deepview-title {
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.12em;
+  margin-top: 4px;
+}
+.deepview-meta {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  color: var(--ink-4);
+  margin-top: 4px;
+  letter-spacing: 0.06em;
+}
+.deepview-feed {
+  padding: 12px 0 8px;
+}
+.dv-card {
+  margin: 0 16px 10px;
+  padding: 12px 14px;
+  background: var(--ink-1);
+  border-radius: 8px;
+  border-left: 3px solid var(--ink-3);
+}
+.dv-card[data-cat="COMPRESSION"] { border-left-color: var(--gold); }
+.dv-card[data-cat="PRESSURE"]    { border-left-color: var(--teal); }
+.dv-card[data-cat="SWEEP"]       { border-left-color: var(--state-warn); }
+.dv-card[data-cat="EXPANSION"]   { border-left-color: var(--green); }
+.dv-card[data-cat="SIGNAL"]      { border-left-color: var(--white); }
+.dv-card[data-cat="SYSTEM"]      { border-left-color: var(--ink-3); }
+.dv-cat-tag {
+  font-family: var(--mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  margin-bottom: 5px;
+}
+.dv-card[data-cat="COMPRESSION"] .dv-cat-tag { color: var(--gold); }
+.dv-card[data-cat="PRESSURE"]    .dv-cat-tag { color: var(--teal); }
+.dv-card[data-cat="SWEEP"]       .dv-cat-tag { color: var(--state-warn); }
+.dv-card[data-cat="EXPANSION"]   .dv-cat-tag { color: var(--green); }
+.dv-card[data-cat="SIGNAL"]      .dv-cat-tag { color: var(--white); }
+.dv-card[data-cat="SYSTEM"]      .dv-cat-tag { color: var(--ink-4); }
+.dv-card-text {
+  font-family: var(--font-body, sans-serif);
+  font-size: 0.8rem;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+.dv-refresh-row {
+  text-align: center;
+  padding: 8px 0 4px;
+}
+.dv-refresh-btn {
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-4);
+  background: transparent;
+  border: 1px solid var(--ink-3);
+  border-radius: 12px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+.dv-refresh-btn:hover { color: var(--gold); border-color: var(--gold); }
+.deep-section {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+.deep-section-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.deep-pw-row {
+  display: flex;
+  gap: 12px;
+}
+.deep-pw-cell {
+  flex: 1;
+}
+.deep-pw-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-top: 4px;
+}
+.deep-pw-badge[data-state="HIGH"]     { background: rgba(239,68,68,0.15); color: var(--red); }
+.deep-pw-badge[data-state="ELEVATED"] { background: rgba(245,158,11,0.15); color: var(--state-warn); }
+.deep-pw-badge[data-state="MODERATE"] { background: rgba(99,102,241,0.15); color: #818cf8; }
+.deep-pw-badge[data-state="LOW"]      { background: rgba(20,184,166,0.15); color: var(--teal); }
+.deep-score-bar {
+  display: flex;
+  gap: 4px;
+  height: 8px;
+}
+.deep-score-seg {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--border);
+}
+.deep-score-seg.active-1 { background: var(--teal); }
+.deep-score-seg.active-2 { background: var(--teal); }
+.deep-score-seg.active-3 { background: #818cf8; }
+.deep-score-seg.active-4 { background: var(--state-warn); }
+.deep-score-seg.active-5 { background: var(--red); }
+.deep-mkt-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.deep-mkt-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.deep-mkt-key { color: var(--ink-3); }
+.deep-mkt-val { color: var(--ink); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN ──────────────────────────────────────────── -->
+<div id="login">
+  <p class="login-logo">SILENT<span>ANALYST</span></p>
+  <p class="login-sub">Intelligence Engine · SA-2</p>
+  <div class="login-card">
+    <p class="login-label">Enter Invite Code</p>
+    <div class="login-input-wrap">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--ink-3);flex-shrink:0"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <input id="code-input" type="text" placeholder="SA-XXXXXXXX" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </div>
+    <button class="login-btn" id="login-btn">UNLOCK</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ── APP ────────────────────────────────────────────── -->
+<div id="app" style="display:none">
+
+  <!-- TOP BAR -->
+  <div id="topbar">
+    <div class="topbar-logo">SILENT<span>ANALYST</span></div>
+    <div class="topbar-right">
+      <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+      <button class="deepview-trigger" id="deepview-trigger" onclick="toggleDeepView()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83
+                   M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+        </svg>
+      </button>
+      <button class="bell-btn" data-action="notif">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      </button>
+      <button class="bell-btn" data-action="logout" title="Logout" aria-label="Logout">⎋</button>
+    </div>
+  </div>
+
+  <!-- SCREENS -->
+  <div id="screens">
+
+    <!-- ── BOARD ──────────────────────────────────────── -->
+    <div class="screen" id="screen-pressure">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── INTELLIGENCE</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>LIVE
+      </span>
+    </div>
+    <div class="screen-title">PRESSURE WATCH</div>
+    <div class="screen-meta" id="pw-meta">
+      Ranked by Expansion Readiness
+    </div>
+  </div>
+
+    <!-- Summary strip -->
+    <div class="pw-summary-strip">
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-extreme">—</span>
+        <span class="pw-label">EXTREME</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-high">—</span>
+        <span class="pw-label">HIGH</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-rising">—</span>
+        <span class="pw-label">RISING</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-low">—</span>
+        <span class="pw-label">LOW</span>
+      </div>
+    </div>
+
+    <!-- Filter pills -->
+    <div class="pw-filters">
+      <button class="pw-pill active" data-filter="ALL">ALL</button>
+      <button class="pw-pill" data-filter="EXTREME">EXTREME</button>
+      <button class="pw-pill" data-filter="HIGH">HIGH</button>
+      <button class="pw-pill" data-filter="RISING">RISING</button>
+      <button class="pw-pill" data-filter="LOW">LOW</button>
+    </div>
+
+    <!-- Card list -->
+    <div id="pw-list"></div>
+  </div>
+
+  <!-- DeepView Drawer -->
+  <div id="deepview-drawer" class="deepview-drawer deepview-drawer--closed">
+    <div class="deepview-header">
+      <div class="deepview-title-row">
+        <span class="deepview-eyebrow">── INTELLIGENCE</span>
+        <button class="deepview-close" onclick="toggleDeepView()">✕</button>
+      </div>
+      <div class="deepview-title">DEEPVIEW</div>
+      <div class="deepview-meta" id="deepview-meta">Loading observations…</div>
+    </div>
+    <div id="deepview-feed" class="deepview-feed">
+      <div class="loading-row"><div class="spinner"></div>Loading…</div>
+    </div>
+  </div>
+  <div id="deepview-overlay"
+       class="deepview-overlay deepview-overlay--hidden"
+       onclick="toggleDeepView()"></div>
+
+  <div class="screen active" id="screen-board">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── INTELLIGENCE</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>LIVE
+      </span>
+    </div>
+    <div class="screen-title">MARKET STATE</div>
+    <div class="screen-meta" id="board-meta">LOADING…</div>
+  </div>
+
+      <!-- Resolver Strip -->
+      <div id="resolver-strip">
+        <div class="loading-row"><div class="spinner"></div>Loading feed…</div>
+      </div>
+
+      <!-- State Grid -->
+      <div class="state-grid" id="state-grid">
+        <div class="state-cell" data-state="COMPRESSION">
+          <div class="state-num" id="cnt-compression">—</div>
+          <div class="state-label">Compression</div>
+          <div class="state-sub" id="sub-compression">Building</div>
+        </div>
+        <div class="state-cell" data-state="TRENDING">
+          <div class="state-num" id="cnt-trending">—</div>
+          <div class="state-label">Trending</div>
+          <div class="state-sub" id="sub-trending">Active</div>
+        </div>
+        <div class="state-cell" data-state="EMERGING">
+          <div class="state-num" id="cnt-emerging">—</div>
+          <div class="state-label">Emerging</div>
+          <div class="state-sub" id="sub-emerging">Early</div>
+        </div>
+        <div class="state-cell" data-state="EXHAUSTED">
+          <div class="state-num" id="cnt-exhausted">—</div>
+          <div class="state-label">Exhausted</div>
+          <div class="state-sub" id="sub-exhausted">Caution</div>
+        </div>
+      </div>
+
+      <!-- Timeframe Filters -->
+      <div class="filter-row" id="filter-row">
+        <button class="filter-btn active" data-tf="ALL">ALL</button>
+        <button class="filter-btn" data-tf="30M">30M</button>
+        <button class="filter-btn" data-tf="1H">1H</button>
+        <button class="filter-btn" data-tf="4H">4H</button>
+        <button class="filter-btn" data-tf="1D">1D</button>
+      </div>
+
+      <!-- Asset Cards -->
+      <div id="board-cards">
+        <div class="loading-row"><div class="spinner"></div>Fetching market context…</div>
+      </div>
+
+      <div class="footer-cap">— End of Board —</div>
+    </div>
+
+    <!-- ── PULSE ──────────────────────────────────────────── -->
+    <div class="screen" id="screen-pulse">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── INTELLIGENCE</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>LIVE
+      </span>
+    </div>
+    <div class="screen-title">PULSE</div>
+    <div class="screen-meta" id="pulse-meta">
+      ALL TIME · LOADING…
+    </div>
+  </div>
+
+      <div class="stats-grid" id="pulse-stats">
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-winrate">—</div><div class="stat-label">Win Rate</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-pnl" style="color:var(--teal)">—</div><div class="stat-label">Net P&amp;L</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-count">—</div><div class="stat-label">Signals</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-pulse-rr">—</div><div class="stat-label">Avg R:R</div></div>
+      </div>
+
+      <div class="signal-section-label">ACTIVE</div>
+      <div id="pulse-active">
+        <div class="loading-row"><div class="spinner"></div>Loading…</div>
+      </div>
+
+      <div class="signal-section-label" style="margin-top:12px">CLOSED</div>
+      <div id="pulse-closed"></div>
+
+      <div class="footer-cap" id="pulse-footer">— End of Pulse Log —</div>
+    </div>
+
+    <!-- ── RIFT ───────────────────────────────────────────── -->
+    <div class="screen" id="screen-rift">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── INTELLIGENCE</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>LIVE
+      </span>
+    </div>
+    <div class="screen-title">RIFT</div>
+    <div class="screen-meta" id="rift-meta">
+      ALL TIME · LOADING…
+    </div>
+  </div>
+
+      <div class="stats-grid" id="rift-stats">
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-winrate">—</div><div class="stat-label">Win Rate</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-pnl" style="color:var(--teal)">—</div><div class="stat-label">Net P&amp;L</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-count">—</div><div class="stat-label">Signals</div></div>
+        <div class="stat-cell"><div class="stat-val" id="stat-rift-rr">—</div><div class="stat-label">Avg R:R</div></div>
+      </div>
+
+      <div class="signal-section-label">ACTIVE</div>
+      <div id="rift-active">
+        <div class="loading-row"><div class="spinner"></div>Loading…</div>
+      </div>
+
+      <div class="signal-section-label" style="margin-top:12px">CLOSED</div>
+      <div id="rift-closed"></div>
+
+      <div class="footer-cap" id="rift-footer">— End of Rift Log —</div>
+    </div>
+
+    <!-- ── WATCHLIST ──────────────────────────────────────── -->
+    <div class="screen" id="screen-watch">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── INTELLIGENCE</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>LIVE
+      </span>
+    </div>
+    <div class="screen-title">WATCHLIST</div>
+    <div class="screen-meta" id="watch-meta">
+      Active Observation Universe
+    </div>
+  </div>
+
+      <div class="search-wrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" placeholder="Search assets…" id="search-input" oninput="filterWatchlist(this.value)">
+      </div>
+
+      <div id="watchlist-groups">
+        <div class="loading-row"><div class="spinner"></div>Loading watchlist…</div>
+      </div>
+
+      <div class="footer-cap" id="watch-footer">— 0 Assets Tracked —</div>
+    </div>
+
+    <!-- ── INTELLIGENCE FEED ────────────────────────────── -->
+    <!-- ── PROFILE ──────────────────────────────────────── -->
+    <div class="screen" id="screen-profile">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── OPTICORE LABS</span>
+      <span class="live-indicator">
+        <span class="live-dot"></span>SA·3
+      </span>
+    </div>
+    <div class="screen-title">PROFILE</div>
+    <div class="screen-meta" id="prof-header-engine">
+      Intelligence Terminal
+    </div>
+  </div>
+
+      <div class="profile-hero">
+        <div class="profile-avatar">SA</div>
+        <div>
+          <div class="profile-name">TRADER PROFILE</div>
+          <div class="profile-tier" id="profile-tier">ACTIVE · PRO TIER</div>
+        </div>
+      </div>
+
+      <div class="stats-grid" style="margin-bottom:24px">
+        <div class="stat-cell"><div class="stat-val" id="prof-signals" style="color:var(--teal)">—</div><div class="stat-label">Signals</div></div>
+        <div class="stat-cell"><div class="stat-val" id="prof-winrate">—</div><div class="stat-label">All-Time Win %</div></div>
+        <!-- Q2 intentionally hardcoded — no season field in /stats API yet -->
+        <div class="stat-cell"><div class="stat-val" id="prof-season">Q2</div><div class="stat-label">Season</div></div>
+        <div class="stat-cell"><div class="stat-val" id="prof-engine">SA·3</div><div class="stat-label">Engine</div></div>
+      </div>
+
+      <div class="pref-group">
+        <div class="pref-label">Preferences</div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Signal Notifications</div><div class="pref-item-desc">Push alerts on new signals</div></div>
+          <div class="toggle on"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Sound Alerts</div><div class="pref-item-desc">Audio on TP / SL events</div></div>
+          <div class="toggle"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Exhaustion Warnings</div><div class="pref-item-desc">Early stage-5 detection</div></div>
+          <div class="toggle on"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Pressure Watch Alerts</div><div class="pref-item-desc">Notify on HIGH / EXTREME readiness</div></div>
+          <div class="toggle on"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Pulse Telegram</div><div class="pref-item-desc">Broadcast v1 signals to Telegram</div></div>
+          <div class="toggle on"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Rift Telegram</div><div class="pref-item-desc">Broadcast v3 signals to Telegram</div></div>
+          <div class="toggle on"></div>
+        </div>
+        <div class="pref-item" data-action="toggle-pref">
+          <div><div class="pref-item-name">Daily Edge Brief</div><div class="pref-item-desc">Morning intelligence summary</div></div>
+          <div class="toggle on"></div>
+        </div>
+      </div>
+
+      <div class="pref-group">
+        <div class="pref-label">System</div>
+        <div class="sys-item">
+          <div><div class="pref-item-name">Engine Version</div><div class="pref-item-desc" id="prof-version">SA·3 · Build 0506.26</div></div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--ink-3)"><path d="M9 18l6-6-6-6"/></svg>
+        </div>
+        <div class="sys-item">
+          <div><div class="pref-item-name">Subscription</div><div class="pref-item-desc">PRO · RENEWS JUN 2026</div></div>
+          <span class="badge bullish">PRO</span>
+        </div>
+        <div class="sys-item" id="sys-health" data-action="open-system-audit" style="cursor:pointer">
+          <div>
+            <div class="pref-item-name">System Health</div>
+            <div class="pref-item-desc" id="sys-health-desc">Loading…</div>
+          </div>
+          <div class="sys-item-val" id="sys-health-val">—</div>
+        </div>
+      </div>
+
+      <div style="text-align:center; padding: 16px; font-family:var(--font-mono); font-size:9px; color:var(--ink-3)">
+        OPTICORE LABS · OPTICORE.AFRICA
+      </div>
+    </div>
+
+  </div><!-- /screens -->
+
+  <!-- BOTTOM NAV -->
+  <nav id="nav">
+
+    <button class="nav-tab active" data-screen="board"
+            onclick="goTo('board', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <rect x="3" y="3" width="7" height="7" rx="1"/>
+        <rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/>
+        <rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+      <span class="nav-label">Market State</span>
+    </button>
+
+    <button class="nav-tab" data-screen="pressure"
+            onclick="goTo('pressure', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83
+                 M16.24 16.24l2.83 2.83M2 12h4M18 12h4
+                 M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+      </svg>
+      <span class="nav-label">Pressure</span>
+    </button>
+
+    <button class="nav-tab" data-screen="pulse"
+            onclick="goTo('pulse', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      <span class="nav-label">Pulse</span>
+    </button>
+
+    <button class="nav-tab" data-screen="rift"
+            onclick="goTo('rift', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+      </svg>
+      <span class="nav-label">Rift</span>
+    </button>
+
+    <button class="nav-tab" data-screen="watch"
+            onclick="goTo('watch', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <path d="M9 11l3 3L22 4"/>
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0
+                 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+      </svg>
+      <span class="nav-label">Watchlist</span>
+    </button>
+
+    <button class="nav-tab" data-screen="profile"
+            onclick="goTo('profile', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>
+      <span class="nav-label">Profile</span>
+    </button>
+
+  </nav>
+
+</div><!-- /app -->
+
+<!-- ── DRAWERS ─────────────────────────────────────────── -->
+<div class="drawer-overlay" id="overlay"></div>
+
+<!-- Deep View Drawer -->
+<div class="drawer" id="drawer-deep">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div>
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px" id="deep-state-label">—</div>
+      <div class="drawer-title" id="deep-title">—</div>
+    </div>
+    <button class="drawer-close">×</button>
+  </div>
+
+  <!-- Context metrics -->
+  <div class="deep-context-grid" id="deep-context-grid">
+    <div class="deep-ctx-cell">
+      <div class="deep-ctx-label">Volatility</div>
+      <div class="deep-ctx-val" id="deep-comp">—</div>
+      <div class="metric-bar"><div class="metric-bar-fill comp" id="deep-comp-bar" style="width:0%"></div></div>
+    </div>
+    <div class="deep-ctx-cell">
+      <div class="deep-ctx-label">Expansion</div>
+      <div class="deep-ctx-val" id="deep-exp">—</div>
+      <div class="metric-bar"><div class="metric-bar-fill exp" id="deep-exp-bar" style="width:0%"></div></div>
+    </div>
+    <div class="deep-ctx-cell">
+      <div class="deep-ctx-label">RSI Stage</div>
+      <div class="deep-ctx-val" id="deep-rsi" style="font-size:16px">—</div>
+    </div>
+    <div class="deep-ctx-cell">
+      <div class="deep-ctx-label">Liquidity</div>
+      <div class="deep-ctx-val" id="deep-liq" style="font-size:14px;margin-top:4px">—</div>
+    </div>
+  </div>
+
+  <!-- Active Signal -->
+  <div id="deep-signal-wrap" style="display:none">
+    <div style="padding:0 20px;margin-bottom:8px">
+      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Active Signal</div>
+    </div>
+    <div class="deep-signal-card">
+      <div class="deep-levels">
+        <div class="deep-level sl">
+          <div class="deep-level-label">Stop Loss</div>
+          <div class="deep-level-val" id="deep-sl">—</div>
+        </div>
+        <div class="deep-level entry">
+          <div class="deep-level-label">Entry</div>
+          <div class="deep-level-val" id="deep-entry">—</div>
+        </div>
+        <div class="deep-level tp">
+          <div class="deep-level-label">Take Profit</div>
+          <div class="deep-level-val" id="deep-tp">—</div>
+        </div>
+      </div>
+      <div class="progress-track" style="margin-bottom:8px">
+        <div class="progress-fill" id="deep-progress-fill" style="width:50%"></div>
+        <div class="progress-marker" id="deep-progress-marker" style="left:50%"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-family:var(--font-mono);font-size:11px;color:var(--ink-3)" id="deep-signal-meta">—</div>
+        <div style="font-family:var(--font-mono);font-size:16px;font-weight:500" id="deep-running-pct">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Signal History -->
+  <div id="deep-history-wrap">
+    <div style="padding:0 20px;margin-bottom:8px">
+      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Signal History</div>
+    </div>
+    <div id="deep-history" style="padding:0 20px"></div>
+  </div>
+
+  <!-- Pressure Watch -->
+  <div class="deep-section" id="deep-pressure-section">
+    <div class="deep-section-label">Pressure Watch</div>
+    <div class="deep-pw-row">
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">State</div>
+        <div class="deep-pw-badge" id="deep-pressure-badge">—</div>
+      </div>
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Sweep Risk</div>
+        <div class="deep-ctx-val" id="deep-sweep-risk" style="font-size:14px">—</div>
+      </div>
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Quality</div>
+        <div class="deep-ctx-val" id="deep-quality" style="font-size:14px">—</div>
+      </div>
+    </div>
+    <div class="deep-section-label" style="font-size:9px;margin-top:12px;margin-bottom:6px">Pressure Score</div>
+    <div class="deep-score-bar" id="deep-pressure-score">
+      <div class="deep-score-seg" id="dss1"></div>
+      <div class="deep-score-seg" id="dss2"></div>
+      <div class="deep-score-seg" id="dss3"></div>
+      <div class="deep-score-seg" id="dss4"></div>
+      <div class="deep-score-seg" id="dss5"></div>
+    </div>
+  </div>
+
+  <!-- Wick Intelligence -->
+  <div class="deep-section" id="deep-wick-section" style="display:none">
+    <div class="deep-section-label">Wick Intelligence</div>
+    <div class="deep-pw-row">
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Rejection</div>
+        <div class="deep-ctx-val" id="deep-rejection">—</div>
+      </div>
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Breakout Q</div>
+        <div class="deep-ctx-val" id="deep-bq">—</div>
+      </div>
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Body</div>
+        <div class="deep-ctx-val" id="deep-bc">—</div>
+      </div>
+      <div class="deep-pw-cell">
+        <div class="deep-ctx-label">Sweep Prob</div>
+        <div class="deep-ctx-val" id="deep-sp">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Market State -->
+  <div class="deep-section" id="deep-mktstate-section">
+    <div class="deep-section-label">Market State</div>
+    <div class="deep-mkt-grid">
+      <div class="deep-mkt-row"><span class="deep-mkt-key">Pressure</span><span class="deep-mkt-val" id="dms-pressure">—</span></div>
+      <div class="deep-mkt-row"><span class="deep-mkt-key">Expansion</span><span class="deep-mkt-val" id="dms-expansion">—</span></div>
+      <div class="deep-mkt-row"><span class="deep-mkt-key">Structure</span><span class="deep-mkt-val" id="dms-structure">—</span></div>
+      <div class="deep-mkt-row"><span class="deep-mkt-key">Liquidity</span><span class="deep-mkt-val" id="dms-liquidity">—</span></div>
+      <div class="deep-mkt-row"><span class="deep-mkt-key">Momentum</span><span class="deep-mkt-val" id="dms-momentum">—</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- State Detail Drawer -->
+<div class="drawer" id="drawer-state">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div>
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px" id="state-drawer-eyebrow">Market State</div>
+      <div class="drawer-title" id="state-drawer-title">—</div>
+    </div>
+    <button class="drawer-close">×</button>
+  </div>
+  <div class="state-detail-list" id="state-detail-list"></div>
+</div>
+
+<script src="api.js"></script>
+<script>
+// ── CONFIG ────────────────────────────────────────────────────
+const API_BASE = (window.SA_API_BASE) ? window.SA_API_BASE : 'http://54.254.214.56:5001/api/mobile';
+const REFRESH_MS = 30000;
+const TF_MAP = { '30M':'30m', '1H':'1h', '4H':'4h', '1D':'1d' };
+
+// ── STATE ─────────────────────────────────────────────────────
+let CODE = (window.SA_API && typeof window.SA_API.getStoredCode === 'function')
+  ? (window.SA_API.getStoredCode() || localStorage.getItem('sa_code') || '')
+  : (localStorage.getItem('sa_code') || '');
+let currentScreen = 'board';
+let currentFilter = 'ALL';
+let refreshTimer = null;
+let cache = {};
+let watchlistRaw = null;
+
+// ── API ───────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  // Prefer centralized SA_API convenience wrappers when available, with a safe fallback
+  if (window.SA_API) {
+    const m = window.SA_API;
+    try {
+      if (path === '/board' && typeof m.getBoard === 'function') {
+        const res = await m.getBoard(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/system/context' && typeof m.getSystemContext === 'function') {
+        const res = await m.getSystemContext(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/resolver/feed' && typeof m.getResolverFeed === 'function') {
+        const res = await m.getResolverFeed(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/watchlist/live' && typeof m.getLiveWatchlist === 'function') {
+        const res = await m.getLiveWatchlist(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/signals' && typeof m.getSignals === 'function') {
+        const res = await m.getSignals(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/stats' && typeof m.getStats === 'function') {
+        const res = await m.getStats(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path === '/audit/system' && typeof m.getSystemAudit === 'function') {
+        const res = await m.getSystemAudit(opts); if (!res.ok) throw res; return res.data;
+      }
+      if (path.startsWith('/context/') && typeof m.getTickerContext === 'function') {
+        const ticker = decodeURIComponent(path.slice('/context/'.length));
+        const res = await m.getTickerContext(ticker, opts); if (!res.ok) throw res; return res.data;
+      }
+
+      // Generic request fallback to SA_API.request
+      if (typeof m.request === 'function') {
+        const res = await m.request(path, opts); if (!res.ok) throw res; return res.data;
+      }
+    } catch (e) {
+      // Normalize error
+      if (e && e.error) throw new Error((e.error && e.error.message) || e.error || `HTTP ${e.status || 0}`);
+      throw new Error((e && e.message) || String(e));
+    }
+  }
+
+  // Legacy fetch fallback
+  const r = await fetch(`${API_BASE}${path}`, {
+    headers: { 'X-Invite-Code': CODE }
+  });
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+// ── AUTH ──────────────────────────────────────────────────────
+async function doLogin() {
+  const input = document.getElementById('code-input');
+  const code  = input.value.trim().toUpperCase();
+  if (!code) return;
+
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
+  btn.disabled = true;
+  btn.textContent = 'VERIFYING…';
+  err.textContent = '';
+
+  try {
+    // Prefer auth endpoint via SA_API when available
+    if (window.SA_API && typeof window.SA_API.auth === 'function') {
+      const res = await window.SA_API.auth(code, { retries: 0 });
+      if (!res.ok) throw new Error((res.error && res.error.message) || res.error || 'Invalid invite code');
+    } else {
+      // Fallback: POST to /auth with proper JSON encoding as a last resort
+      try {
+        const fallbackRes = await fetch(`${API_BASE}/auth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code })
+        });
+        let fallbackJson = null;
+        try { fallbackJson = await fallbackRes.json(); } catch (e) { /* ignore parse errors */ }
+        if (!fallbackRes.ok || !fallbackJson || !fallbackJson.valid) {
+          throw new Error((fallbackJson && fallbackJson.message) || `Invalid invite code`);
+        }
+      } catch (e) {
+        throw e;
+      }
+    }
+
+    // Persist using SA_API primary key and legacy fallback for compatibility
+    if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode(code);
+    localStorage.setItem('sa_code', code);
+    CODE = code;
+
+    document.getElementById('login').classList.add('hidden');
+    setTimeout(() => {
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      document.getElementById('app').style.flexDirection = 'column';
+      initDashboard();
+    }, 400);
+  } catch (err) {
+    CODE = '';
+    err = document.getElementById('login-error');
+    document.getElementById('login-error').textContent = (err && err.message) ? err.message : (err && err.toString()) || 'Invalid invite code. Try again.';
+    btn.disabled = false;
+    btn.textContent = 'UNLOCK';
+  }
+}
+
+document.getElementById('code-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// Auto-login: validate stored code before unlocking the app
+(async function autoLogin() {
+  if (!CODE) return;
+  try {
+    if (window.SA_API && typeof window.SA_API.getBoard === 'function') {
+      const res = await window.SA_API.getBoard();
+      if (!res.ok) throw res;
+    } else {
+      await api('/board');
+    }
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    document.getElementById('app').style.flexDirection = 'column';
+    initDashboard();
+  } catch (e) {
+    // invalid/expired — clear stored code and show login
+    if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode('');
+    localStorage.removeItem('sa_code');
+    CODE = '';
+  }
+})();
+
+// ── NAVIGATION ────────────────────────────────────────────────
+function goTo(screen, btn) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(`screen-${screen}`).classList.add('active');
+  if (btn) btn.classList.add('active');
+  currentScreen = screen;
+  loadScreen(screen);
+}
+
+function loadScreen(screen) {
+  if (screen === 'board')   { loadBoard(); loadResolverFeed(); }
+  if (screen === 'pulse')   loadSignals('v1');
+  if (screen === 'rift')    loadSignals('v3');
+  if (screen === 'watch')   loadWatchlist();
+  if (screen === 'profile')  loadProfile();
+  if (screen === 'pressure') loadPressureWatch();
+}
+
+// ── TIMEFRAME FILTER ──────────────────────────────────────────
+function setFilter(btn, tf) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentFilter = tf;
+
+  // Update board counts/meta and cards using cached context when available
+  if (cache.context) {
+    updateBoardCounts(cache.context);
+    renderBoardCards(cache.context);
+  } else {
+    renderBoardCards(cache.context);
+  }
+
+  // Re-render resolver strip from cache with timeframe filter applied if present
+  if (cache.resolverFeed) {
+    try {
+      const df = cache.resolverFeed;
+      const tfv = (currentFilter && currentFilter !== 'ALL') ? TF_MAP[currentFilter] : null;
+      const feed = (tfv && df.feed) ? df.feed.filter(f => f.interval === tfv) : (df.feed || []);
+      renderResolverStrip(Object.assign({}, df, { feed }));
+    } catch (e) { /* ignore */ }
+  } else {
+    // fallback: trigger a fresh load
+    loadResolverFeed();
+  }
+
+  // Re-render watchlist from cache (preserves active search query) or reload
+  if (cache.watchlist) {
+    const qEl = document.getElementById('search-input');
+    const q = qEl ? (qEl.value || '') : '';
+    renderWatchlistGroups(cache.watchlist, q);
+  } else {
+    loadWatchlist();
+  }
+}
+
+function matchesFilter(interval) {
+  if (currentFilter === 'ALL') return true;
+  return interval === TF_MAP[currentFilter];
+}
+
+// Update board meta counts and state counts respecting timeframe filter
+function updateBoardCounts(ctx) {
+  if (!ctx || !ctx.assets) return;
+
+  // total assets for display (respect timeframe)
+  let totalForDisplay = ctx.total || (ctx.assets ? ctx.assets.length : 0);
+  if (currentFilter && currentFilter !== 'ALL') {
+    const tf = TF_MAP[currentFilter];
+    totalForDisplay = (ctx.assets || []).filter(a => {
+      const interval = (a.signal && a.signal.interval) || a.interval;
+      return interval && interval === tf;
+    }).length;
+  }
+  document.getElementById('board-meta').textContent = `Updated just now · ${totalForDisplay} Assets`;
+
+  // compute state counts from assets when timeframe applied
+  let counts = {};
+  if (!currentFilter || currentFilter === 'ALL') {
+    counts = ctx.state_counts || {};
+  } else {
+    const tf = TF_MAP[currentFilter];
+    (ctx.assets || []).forEach(a => {
+      const interval = (a.signal && a.signal.interval) || a.interval;
+      if (!interval || interval !== tf) return;
+      const st = a.market_state || 'NEUTRAL';
+      counts[st] = (counts[st] || 0) + 1;
+    });
+  }
+
+  document.getElementById('cnt-compression').textContent = counts.COMPRESSION || 0;
+  document.getElementById('cnt-trending').textContent    = counts.TRENDING    || 0;
+  document.getElementById('cnt-emerging').textContent    = counts.EMERGING    || 0;
+  document.getElementById('cnt-exhausted').textContent   = counts.EXHAUSTED   || 0;
+}
+
+// ── LOAD BOARD ────────────────────────────────────────────────
+async function loadBoard() {
+  try {
+    let ctx, stats;
+    if (window.SA_API && typeof window.SA_API.getSystemContext === 'function' && typeof window.SA_API.getStats === 'function') {
+      const [resCtx, resStats] = await Promise.all([window.SA_API.getSystemContext(), window.SA_API.getStats()]);
+      if (!resCtx.ok) throw resCtx;
+      if (!resStats.ok) throw resStats;
+      ctx = resCtx.data;
+      stats = resStats.data;
+    } else {
+      [ctx, stats] = await Promise.all([api('/system/context'), api('/stats')]);
+    }
+    cache.context = ctx;
+    cache.stats   = stats;
+
+    // Update counts/meta and render cards (timeframe-aware)
+    updateBoardCounts(ctx);
+    renderBoardCards(ctx);
+  } catch(e) {
+    document.getElementById('board-cards').innerHTML =
+      `<div class="empty-state">Unable to load market context.<br>${e.message}</div>`;
+  }
+}
+
+function renderBoardCards(ctx) {
+  if (!ctx || !ctx.assets) return;
+  const container = document.getElementById('board-cards');
+
+  // Filter by timeframe
+  let assets = ctx.assets.filter(a => {
+    if (currentFilter === 'ALL') return true;
+    const tf = TF_MAP[currentFilter];
+    if (a.signal && a.signal.interval) return a.signal.interval === tf;
+    return false;
+  });
+
+  // Sort: active signals first, then by compression score
+  assets.sort((a, b) => {
+    const aActive = a.signal && !a.signal.outcome ? 1 : 0;
+    const bActive = b.signal && !b.signal.outcome ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    const aC = a.context?.compression || 0;
+    const bC = b.context?.compression || 0;
+    return bC - aC;
+  });
+
+  if (!assets.length) {
+    container.innerHTML = `<div class="empty-state">No assets match this filter.</div>`;
+    return;
+  }
+
+  container.innerHTML = assets.map(a => buildAssetCard(a)).join('');
+}
+
+// ── PRESSURE STATE DERIVATION ────────────────────────────────────────
+
+
+function buildAssetCard(a) {
+  const sym   = a.symbol || '—';
+  const state = a.market_state || 'NEUTRAL';
+  const ctx   = a.context || {};
+  const sig   = a.signal;
+
+  const comp = ctx.compression != null ? ctx.compression : null;
+  const exp  = ctx.expansion   != null ? ctx.expansion   : null;
+
+  const compPct = comp != null
+    ? Math.min(comp * 100, 200).toFixed(0) + '%' : '—';
+  const expPct  = exp  != null
+    ? (exp * 100).toFixed(0) + '%'               : '—';
+
+  const rsi           = ctx.rsi_stage    || '—';
+  const sweep         = ctx.sweep;
+  const pressureState = a.pressure_state || 'LOW';
+
+  const sweepDisplay = sweep
+    ? '<span class="asset-metric-val sweep-yes">YES</span>'
+    : '<span class="asset-metric-val sweep-no">NO</span>';
+
+  let signalRow = '';
+  if (sig) {
+    const dir      = sig.direction || '';
+    const dirLabel = dir === 'BUY' ? 'Bullish Bias' : 'Bearish Bias';
+    const dirClass = dir === 'BUY' ? 'buy' : 'sell';
+    const pct      = sig.result_pct;
+    const run      = (pct != null && pct !== 0)
+      ? `${pct > 0 ? '+' : ''}${pct}%` : null;
+    const status   = sig.outcome || 'RUNNING';
+    const pctClass = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+
+    signalRow = `
+      <div class="asset-signal-row">
+        <div style="display:flex;align-items:center;gap:var(--sp-2)">
+          <span class="signal-dir-badge ${dirClass}">${dirLabel}</span>
+          <span style="font-family:var(--font-mono);font-size:10px;
+                       color:var(--ink-3)">${sig.interval || ''} · ${sig.age || ''}</span>
+        </div>
+        ${run
+          ? `<span class="signal-running ${pctClass}">${run}</span>`
+          : `<span style="font-family:var(--font-mono);font-size:10px;
+                          color:var(--ink-3)">${status}</span>`}
+      </div>`;
+  }
+
+  return `
+    <div class="asset-card" data-state="${state}" data-symbol="${sym}">
+
+      <div class="asset-card-top">
+        <div class="asset-symbol-group">
+          <div class="asset-symbol">${sym}</div>
+          <div class="asset-interval">Momentum · ${rsi}</div>
+        </div>
+        <div class="asset-badge-col">
+          <div class="asset-state-badge">${state}</div>
+          <div class="asset-pressure-badge
+               pressure-${pressureState.toLowerCase()}">${pressureState}</div>
+          ${sweep ? '<div class="sweep-chip">⚠ SWEEP</div>' : ''}
+        </div>
+      </div>
+
+      <div class="asset-metrics-grid">
+        <div class="asset-metric">
+          <div class="asset-metric-label">Volatility</div>
+          <div class="asset-metric-val">${compPct}</div>
+        </div>
+        <div class="asset-metric">
+          <div class="asset-metric-label">Expansion</div>
+          <div class="asset-metric-val">${expPct}</div>
+        </div>
+        <div class="asset-metric">
+          <div class="asset-metric-label">Pressure</div>
+          <div class="asset-metric-val" style="
+            color: ${pressureState === 'EXTREME' ? 'var(--red)'
+                   : pressureState === 'HIGH'    ? 'var(--state-warn)'
+                   : pressureState === 'RISING'  ? 'var(--gold)'
+                   : 'var(--ink-3)'}">
+            ${pressureState}
+          </div>
+        </div>
+        <div class="asset-metric">
+          <div class="asset-metric-label">Sweep</div>
+          ${sweepDisplay}
+        </div>
+      </div>
+
+      ${signalRow}
+    </div>`;
+}
+
+// ── RESOLVER FEED ─────────────────────────────────────────────
+async function loadResolverFeed() {
+  try {
+    let data;
+    if (window.SA_API && typeof window.SA_API.getResolverFeed === 'function') {
+      const res = await window.SA_API.getResolverFeed();
+      if (!res.ok) throw res;
+      data = res.data;
+    } else {
+      data = await api('/resolver/feed');
+    }
+    cache.resolverFeed = data;
+    // If a timeframe filter is active, apply it client-side to the resolver feed
+    if (currentFilter && currentFilter !== 'ALL') {
+      const tf = TF_MAP[currentFilter];
+      const filteredFeed = (data.feed || []).filter(f => f.interval === tf);
+      renderResolverStrip(Object.assign({}, data, { feed: filteredFeed }));
+    } else {
+      renderResolverStrip(data);
+    }
+  } catch (e) {
+    console.error('openDeepView failed', e);
+    document.getElementById('deep-state-label').textContent = 'Load failed';
+    document.getElementById('deep-comp').textContent = '—';
+    document.getElementById('deep-exp').textContent  = '—';
+    document.getElementById('deep-rsi').textContent  = '—';
+    document.getElementById('deep-liq').textContent  = '—';
+    document.getElementById('deep-signal-wrap').style.display = 'none';
+    document.getElementById('deep-history').innerHTML = `
+      <div style="padding:12px;font-family:var(--font-mono);color:var(--red)">Failed to load asset data.</div>
+      <div style="padding:8px 12px">
+        <button id="deep-retry" style="padding:6px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);font-family:var(--font-mono);">Retry</button>
+      </div>`;
+
+    const retryBtn = document.getElementById('deep-retry');
+    if (retryBtn) {
+      retryBtn.onclick = () => {
+        document.getElementById('deep-history').innerHTML = '<div class="loading-row"><div class="spinner"></div>Retrying…</div>';
+        // Small delay to allow UI to update before re-fetch
+        setTimeout(() => openDeepView(symbol), 150);
+      };
+    }
+  }
+}
+
+function renderResolverStrip(data) {
+  const strip = document.getElementById('resolver-strip');
+  if (!data?.feed?.length) {
+    strip.innerHTML = '<div style="padding:0 0 0 4px;font-family:var(--font-mono);font-size:10px;color:var(--ink-3)">No resolved signals yet</div>';
+    return;
+  }
+  strip.innerHTML = data.feed.map(f => {
+    const positive = f.result_pct > 0;
+    return `
+      <div class="resolver-pill" data-action="goto-signals">
+        <div class="resolver-pill-dot" style="background:${positive ? 'var(--teal)' : 'var(--red)'}"></div>
+        <span class="resolver-pill-text">${f.ticker} ${f.direction}</span>
+        <span class="resolver-pill-pct" style="color:${positive ? 'var(--teal)' : 'var(--red)'}">${positive ? '+' : ''}${f.result_pct}%</span>
+        <span style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3)">${f.outcome === 'TP_HIT' ? 'TP' : 'SL'}</span>
+      </div>`;
+  }).join('');
+}
+
+// ── LOAD SIGNALS ──────────────────────────────────────────────
+async function loadSignals(engine) {
+  const prefix = engine === 'v1' ? 'pulse' : 'rift';
+  try {
+    let data;
+    if (window.SA_API && typeof window.SA_API.getSignals === 'function') {
+      const res = await window.SA_API.getSignals({ engine });
+      if (!res.ok) throw res;
+      data = res.data;
+    } else {
+      data = await api('/signals');
+    }
+    cache.signals = data;
+
+    const active = (data.active || []).filter(s => s.strategy_raw === engine);
+    const closed = (data.closed || []).filter(s => s.strategy_raw === engine);
+
+    // All-time per-engine stats from server
+    const serverStats = data.stats || {};
+    const winRate  = serverStats.win_rate ?? 0;
+    const netPnl   = serverStats.net_pnl  ?? 0;
+    const total    = serverStats.total     ?? 0;
+
+    const rrVals   = [...active, ...closed]
+      .filter(s => s.entry > 0 && s.tp > 0 && s.sl > 0)
+      .map(s => s.direction === 'BUY'
+        ? (s.tp - s.entry) / (s.entry - s.sl)
+        : (s.entry - s.tp) / (s.sl - s.entry))
+      .filter(rr => rr > 0 && isFinite(rr));
+    const avg_rr   = rrVals.length > 0
+      ? Math.round(rrVals.reduce((a, b) => a + b, 0) / rrVals.length * 100) / 100 : 0;
+
+    document.getElementById(`${prefix}-meta`).textContent =
+      `All-time · ${total} signals`;
+
+    const wrEl = document.getElementById(`stat-${prefix}-winrate`);
+    wrEl.textContent = `${winRate}%`;
+    wrEl.style.color = 'var(--ink-1)';
+    document.getElementById(`stat-${prefix}-pnl`).textContent   = `${netPnl >= 0 ? '+' : ''}${netPnl}%`;
+    document.getElementById(`stat-${prefix}-count`).textContent = total;
+    document.getElementById(`stat-${prefix}-rr`).textContent    = avg_rr > 0 ? avg_rr.toFixed(2) : '—';
+
+    const activeEl = document.getElementById(`${prefix}-active`);
+    activeEl.innerHTML = active.length
+      ? active.map(s => buildSignalRow(s, 'RUNNING')).join('')
+      : '<div class="empty-state">No active signals.</div>';
+
+    const closedEl = document.getElementById(`${prefix}-closed`);
+    closedEl.innerHTML = closed.length
+      ? closed.map(s => buildSignalRow(s, s.outcome)).join('')
+      : '<div class="empty-state">No closed signals.</div>';
+
+    document.getElementById(`${prefix}-footer`).textContent =
+      `— End of ${engine === 'v1' ? 'Pulse' : 'Rift'} Log —`;
+
+  } catch(e) {
+    document.getElementById(`${prefix}-meta`).textContent       = 'Session window · —';
+    document.getElementById(`stat-${prefix}-winrate`).textContent = '—';
+    document.getElementById(`stat-${prefix}-pnl`).textContent    = '—';
+    document.getElementById(`stat-${prefix}-count`).textContent  = '—';
+    document.getElementById(`stat-${prefix}-rr`).textContent     = '—';
+    document.getElementById(`${prefix}-active`).innerHTML =
+      '<div class="empty-state">No active signals.</div>';
+    document.getElementById(`${prefix}-closed`).innerHTML =
+      '<div class="empty-state">No closed signals.</div>';
+  }
+}
+
+function buildSignalRow(s, outcome) {
+  const pct  = s.running_pct != null ? s.running_pct : s.result_pct;
+  const pctStr = pct != null ? `${pct > 0 ? '+' : ''}${pct}%` : '—';
+  const pctColor = pct > 0 ? 'var(--teal)' : pct < 0 ? 'var(--red)' : 'var(--ink-2)';
+  const outcomeClass = outcome === 'TP_HIT' ? 'tp' : outcome === 'SL_HIT' ? 'sl' : outcome === 'NO_FILL' ? 'nofill' : 'run';
+  const outcomeLabel = outcome === 'TP_HIT' ? '✓ TARGET HIT' : outcome === 'SL_HIT' ? '✗ STOPPED' : outcome === 'NO_FILL' ? '○ NO FILL' : '● RUNNING';
+  const dir = s.direction || '—';
+  const entryStr = s.entry ? formatPrice(s.entry) : '—';
+  const tpStr    = s.tp    ? formatPrice(s.tp)    : '—';
+  const engineBadge = s.strategy && s.strategy !== 'Unknown'
+    ? `<span class="signal-engine-badge" data-engine="${s.strategy}">${s.strategy}</span>`
+    : '';
+
+  let fireCtxBlock = '';
+  if (s.ctx_compression != null) {
+    const firePressure = s.ctx_pressure_state || 'LOW';
+    const sweepStr  = s.ctx_sweep === 1 ? 'YES' : s.ctx_sweep === 0 ? 'NO' : null;
+    const sweepPart = sweepStr != null ? ` · Sweep ${sweepStr}` : '';
+    const line1 = `Fired at: Pressure ${firePressure} · RSI ${s.ctx_rsi_stage || '—'}${sweepPart}`;
+
+    // Phase 3 wick intelligence — only shown when captured at fire time
+    let line2 = '';
+    if (s.ctx_rejection != null) {
+      const rej  = s.ctx_rejection.toFixed(2);
+      const bq   = s.ctx_breakout  != null ? s.ctx_breakout.toFixed(2)  : '—';
+      const bc   = s.ctx_body      != null ? s.ctx_body.toFixed(2)      : '—';
+      const sp   = s.ctx_sweep_prob != null ? s.ctx_sweep_prob.toFixed(2) : '—';
+      const spClass = (s.ctx_sweep_prob || 0) >= 0.70 ? ' ctx-sweep-warn' : '';
+      line2 = `<span class="signal-fire-ctx-wick">` +
+              `Rej ${rej} · BQ ${bq} · Body ${bc} · ` +
+              `SP <span class="${spClass}">${sp}</span>` +
+              `</span>`;
+    }
+
+    fireCtxBlock = `<div class="signal-fire-ctx">${line1}${line2 ? '<br>' + line2 : ''}</div>`;
+  }
+
+  return `
+    <div class="signal-row" data-outcome="${outcome}" data-ticker="${s.ticker}">
+      <div class="signal-row-left">
+        <div class="signal-row-ticker">${s.ticker}</div>
+        <div class="signal-row-dir">
+          <span class="${dir === 'BUY' ? 'buy' : 'sell'}">${dir}</span>
+          &nbsp;·&nbsp;${s.interval || '—'}&nbsp;·&nbsp;${entryStr} → ${tpStr}
+        </div>
+        ${engineBadge}
+      </div>
+      <div class="signal-row-right">
+        <div class="signal-row-pct" style="color:${pctColor}">${pctStr}</div>
+        <div class="signal-row-status ${outcomeClass}">${outcomeLabel}</div>
+      </div>
+      ${fireCtxBlock}
+    </div>`;
+}
+
+// ── LOAD WATCHLIST ────────────────────────────────────────────
+async function loadWatchlist() {
+  try {
+    let data;
+    if (window.SA_API && typeof window.SA_API.getLiveWatchlist === 'function') {
+      const res = await window.SA_API.getLiveWatchlist();
+      if (!res.ok) throw res;
+      data = res.data;
+    } else {
+      data = await api('/watchlist/live');
+    }
+    watchlistRaw = data;
+    cache.watchlist = data;
+
+    document.getElementById('watch-meta').textContent =
+      `Updated just now · ${data.total || 0} Assets`;
+    document.getElementById('watch-footer').textContent =
+      `— ${data.total || 0} Assets Tracked —`;
+
+    renderWatchlistGroups(data, '');
+
+  } catch(e) {
+    document.getElementById('watchlist-groups').innerHTML =
+      `<div class="empty-state">Error: ${e.message}</div>`;
+  }
+}
+
+function renderWatchlistGroups(data, query) {
+  const container = document.getElementById('watchlist-groups');
+  const q = query.toLowerCase();
+
+  const groupOrder = ['COMPRESSION','TRENDING','EMERGING','EXHAUSTED','NEUTRAL'];
+  const groupIcons = {
+    COMPRESSION: '⬛', TRENDING: '⬆', EMERGING: '↗',
+    EXHAUSTED: '⬇', NEUTRAL: '◻'
+  };
+
+  let html = '';
+  for (const g of groupOrder) {
+    let assets = data.groups[g] || [];
+    // Apply timeframe filter if set
+    if (currentFilter && currentFilter !== 'ALL') {
+      const tf = TF_MAP[currentFilter];
+      assets = assets.filter(a => {
+        const interval = a.interval || (a.signal && a.signal.interval);
+        return interval && interval === tf;
+      });
+    }
+    if (q) assets = assets.filter(a => a.symbol.toLowerCase().includes(q));
+    if (!assets.length) continue;
+
+    html += `
+      <div class="watch-group">
+        <div class="watch-group-header">
+          <span class="watch-group-icon">${groupIcons[g]}</span>
+          <span class="watch-group-name">${g}</span>
+          <span class="watch-group-count">${assets.length}</span>
+        </div>
+        <div class="watch-chips">
+          ${assets.map(a => buildWatchChip(a, g)).join('')}
+        </div>
+      </div>`;
+  }
+
+  container.innerHTML = html || '<div class="empty-state">No matching assets.</div>';
+}
+
+function buildWatchChip(a, state) {
+  const pct = a.context?.compression;
+  const pctStr = pct != null ? `${(pct * 100).toFixed(0)}%` : '';
+
+  return `
+    <button class="watch-chip" data-state="${state}" data-symbol="${a.symbol}">
+      <div class="watch-chip-dot"></div>
+      ${a.symbol}
+      ${pctStr ? `<span class="watch-chip-pct">${pctStr}</span>` : ''}
+    </button>`;
+}
+
+function filterWatchlist(q) {
+  if (watchlistRaw) renderWatchlistGroups(watchlistRaw, q);
+}
+
+function buildIntelNote(data) {
+  const comp = (data.groups?.COMPRESSION || []).slice().sort((a,b) =>
+    (b.context?.compression||0) - (a.context?.compression||0));
+  const trending = data.groups?.EMERGING || [];
+  const sweepPending = comp.filter(a => !a.context?.sweep).length;
+
+  if (!comp.length) return 'Market in expansion phase. Monitor active signals for continuation setups.';
+
+  const top = comp[0];
+  const topPct = top.context?.compression ? (top.context.compression * 100).toFixed(0) : '—';
+
+  return `${comp.length} assets in compression buildup. ${top.symbol} leading at ${topPct}% — watching for breakout. ${sweepPending > 0 ? `${sweepPending} assets awaiting liquidity sweep before entry.` : ''} ${trending.length > 0 ? `${trending.length} emerging setups developing.` : ''}`.trim();
+}
+
+// ── DEEPVIEW ────────────────────────────────────────────
+let _dvOpen       = false;
+let _dvLastFetch  = null;
+const DV_TTL_MS   = 8 * 60 * 1000;  // 8 minutes
+
+function toggleDeepView() {
+  _dvOpen = !_dvOpen;
+  const drawer  = document.getElementById('deepview-drawer');
+  const overlay = document.getElementById('deepview-overlay');
+  const trigger = document.getElementById('deepview-trigger');
+
+  if (_dvOpen) {
+    drawer.classList.replace('deepview-drawer--closed','deepview-drawer--open');
+    overlay.classList.remove('deepview-overlay--hidden');
+    trigger.classList.add('active');
+    loadDeepView(false);
+  } else {
+    drawer.classList.replace('deepview-drawer--open','deepview-drawer--closed');
+    overlay.classList.add('deepview-overlay--hidden');
+    trigger.classList.remove('active');
+  }
+}
+
+async function loadDeepView(forceRefresh = false) {
+  const now = Date.now();
+  const stale = !_dvLastFetch || (now - _dvLastFetch) > DV_TTL_MS;
+
+  if (!forceRefresh && !stale) return;  // serve cached render
+
+  const feedEl = document.getElementById('deepview-feed');
+  const metaEl = document.getElementById('deepview-meta');
+  feedEl.innerHTML =
+    '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+
+  try {
+    const url = forceRefresh
+      ? '/intel/brief?refresh=1'
+      : '/intel/brief';
+    const data = await api(url);
+
+    const obs = data.observations || [];
+    const genAt = data.generated_at
+      ? new Date(data.generated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+      : '—';
+    const cached = data.cached ? ' · cached' : ' · fresh';
+
+    metaEl.textContent = `Updated ${genAt}${cached}`;
+    _dvLastFetch = now;
+
+    if (!obs.length) {
+      feedEl.innerHTML =
+        '<div class="empty-state" style="padding:24px;text-align:center">' +
+        'No observations available.</div>';
+      return;
+    }
+
+    feedEl.innerHTML = obs.map(o => `
+      <div class="dv-card" data-cat="${o.category || 'SYSTEM'}">
+        <div class="dv-cat-tag">${o.category || 'SYSTEM'}</div>
+        <div class="dv-card-text">${o.text || ''}</div>
+      </div>
+    `).join('') + `
+      <div class="dv-refresh-row">
+        <button class="dv-refresh-btn" onclick="loadDeepView(true)">
+          ↻ REFRESH
+        </button>
+      </div>`;
+
+  } catch(e) {
+    feedEl.innerHTML =
+      `<div class="empty-state" style="padding:24px;text-align:center;` +
+      `font-family:var(--mono);font-size:0.75rem;color:var(--ink-4)">` +
+      `LOAD ERROR</div>`;
+    metaEl.textContent = 'Failed to load';
+  }
+}
+
+// Background prefetch — keeps cache warm every 8 min
+setInterval(() => loadDeepView(false), DV_TTL_MS);
+
+// loadIntel() stub — screen-intel tab removed but guard against
+// any residual goTo('intel') calls
+function loadIntel() { toggleDeepView(); }
+
+// ── LOAD PROFILE ──────────────────────────────────────────────
+async function loadProfile() {
+  try {
+    let stats;
+    if (window.SA_API && typeof window.SA_API.getStats === 'function') {
+      const res = await window.SA_API.getStats();
+      if (!res.ok) throw res;
+      stats = res.data;
+    } else {
+      stats = await api('/stats');
+    }
+    cache.stats = stats;
+    document.getElementById('prof-signals').textContent = stats.total_signals || 0;
+    document.getElementById('prof-winrate').textContent = `${stats.win_rate || 0}%`;
+    document.getElementById('prof-header-engine').textContent = `${stats.engine || 'SA·3'} · Intelligence Engine`;
+    document.getElementById('prof-engine').textContent  = stats.engine || 'SA·3';
+    document.getElementById('prof-version').textContent = `${stats.engine || 'SA·3'} · ${stats.version || 'Build 0506.26'}`;
+    // Load system health summary when profile loads
+    try { loadSystemHealth(); } catch (e) { /* ignore */ }
+  } catch {}
+}
+
+// ── SYSTEM HEALTH (Profile) ─────────────────────────────────
+async function loadSystemHealth() {
+  try {
+    let data;
+    if (window.SA_API && typeof window.SA_API.getSystemAudit === 'function') {
+      const res = await window.SA_API.getSystemAudit(); if (!res.ok) throw res;
+      data = res.data;
+    } else {
+      data = await api('/audit/system');
+    }
+    cache.audit = data;
+    renderSystemHealth(data);
+  } catch (e) {
+    const desc = document.getElementById('sys-health-desc');
+    const val  = document.getElementById('sys-health-val');
+    if (desc) desc.textContent = 'Error loading health';
+    if (val) val.textContent = '—';
+  }
+}
+
+function renderSystemHealth(data) {
+  if (!data) return;
+  const summary = data.summary || {};
+  const pass = summary.pass || 0;
+  const warn = summary.warn || 0;
+  const fail = summary.fail || 0;
+  const total = pass + warn + fail || 0;
+  const status = data.status || (fail > 0 ? 'FAIL' : warn > 0 ? 'WARN' : 'PASS');
+
+  const desc = document.getElementById('sys-health-desc');
+  const val  = document.getElementById('sys-health-val');
+  if (desc) desc.textContent = `Last scan: ${data.timestamp || '—'}`;
+  if (val) {
+    val.textContent = `${pass}/${total} ${status}`;
+    val.style.color = status === 'PASS' ? 'var(--teal)' : status === 'WARN' ? 'var(--gold)' : 'var(--red)';
+  }
+}
+
+function openSystemAudit() {
+  (async () => {
+    try {
+      let data = cache.audit;
+      if (!data) {
+        if (window.SA_API && typeof window.SA_API.getSystemAudit === 'function') {
+          const res = await window.SA_API.getSystemAudit(); if (!res.ok) throw res;
+          data = res.data;
+        } else {
+          data = await api('/audit/system');
+        }
+        cache.audit = data;
+      }
+
+      const checks = data.checks || [];
+      const listEl = document.getElementById('state-detail-list');
+      listEl.innerHTML = `
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3);margin-bottom:12px">System Audit — ${data.status || ''} · ${data.timestamp || ''}</div>
+        ${checks.map(c => `
+          <div class="state-detail-row" style="align-items:flex-start; padding:12px 0; border-bottom:1px solid var(--border);">
+            <div style="flex:1">
+              <div style="font-family:var(--font-mono);font-size:13px;font-weight:500">${c.name}</div>
+              <div style="font-family:var(--font-mono);font-size:11px;color:var(--ink-3)">${c.detail || ''}</div>
+            </div>
+            <div style="text-align:right; margin-left:12px">
+              <div style="font-family:var(--font-mono);font-size:12px;color:${c.status==='PASS'?'var(--teal)':c.status==='WARN'?'var(--gold)':'var(--red)'}">${c.status}</div>
+              <div style="font-family:var(--font-mono);font-size:11px;color:var(--ink-3)">${c.value || ''}</div>
+            </div>
+          </div>`).join('')}
+      `;
+
+      document.getElementById('state-drawer-eyebrow').textContent = 'System Audit';
+      document.getElementById('state-drawer-title').textContent = data.status || 'Audit';
+      document.getElementById('overlay').classList.add('open');
+      document.getElementById('drawer-state').classList.add('open');
+    } catch (e) {
+      alert('Failed to load system audit: ' + (e && e.message ? e.message : String(e)));
+    }
+  })();
+}
+
+// ── DEEP VIEW ─────────────────────────────────────────────────
+async function openDeepView(symbol) {
+  const drawer = document.getElementById('drawer-deep');
+  const overlay = document.getElementById('overlay');
+
+  document.getElementById('deep-title').textContent = symbol;
+  document.getElementById('deep-state-label').textContent = 'Loading…';
+  document.getElementById('deep-comp').textContent = '—';
+  document.getElementById('deep-exp').textContent  = '—';
+  document.getElementById('deep-rsi').textContent  = '—';
+  document.getElementById('deep-liq').textContent  = '—';
+  document.getElementById('deep-pressure-badge').textContent = '—';
+  document.getElementById('deep-pressure-badge').removeAttribute('data-state');
+  document.getElementById('deep-wick-section').style.display = 'none';
+  for (let i = 1; i <= 5; i++) document.getElementById(`dss${i}`).className = 'deep-score-seg';
+  document.getElementById('deep-signal-wrap').style.display = 'none';
+  document.getElementById('deep-history').innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+
+  try {
+    let ctx;
+    if (window.SA_API && typeof window.SA_API.getTickerContext === 'function') {
+      const res = await window.SA_API.getTickerContext(symbol);
+      if (!res.ok) throw res;
+      ctx = res.data;
+    } else {
+      ctx = await api(`/context/${symbol}`);
+    }
+    const c = ctx.context || {};
+
+    const state = c.market_state || 'NEUTRAL';
+    document.getElementById('deep-state-label').textContent = state;
+
+    const comp = c.compression_score != null ? c.compression_score : null;
+    const exp  = c.expansion_pressure != null ? c.expansion_pressure : null;
+
+    document.getElementById('deep-comp').textContent =
+      comp != null ? `${(comp * 100).toFixed(1)}%` : '—';
+    document.getElementById('deep-exp').textContent =
+      exp  != null ? `${(exp  * 100).toFixed(1)}%` : '—';
+    document.getElementById('deep-comp-bar').style.width =
+      comp != null ? `${Math.min(comp / 2.0, 1) * 100}%` : '0%';
+    document.getElementById('deep-exp-bar').style.width =
+      exp  != null ? `${Math.min(exp, 1) * 100}%` : '0%';
+
+    document.getElementById('deep-rsi').textContent = c.rsi_stage || '—';
+    document.getElementById('deep-liq').textContent =
+      c.liquidity_type ? c.liquidity_type.replace('_', ' ') : '—';
+
+    // Pressure Watch
+    const pressureState = c.pressure_state || 'LOW';
+    const pressureScore = c.pressure_score != null ? c.pressure_score : 0;
+    const pbadge = document.getElementById('deep-pressure-badge');
+    pbadge.textContent = pressureState;
+    pbadge.setAttribute('data-state', pressureState);
+    for (let i = 1; i <= 5; i++) {
+      const seg = document.getElementById(`dss${i}`);
+      seg.className = 'deep-score-seg';
+      if (pressureScore >= i) seg.classList.add(`active-${i}`);
+    }
+
+    // Sweep risk
+    const swP = c.sweep_probability;
+    const srEl = document.getElementById('deep-sweep-risk');
+    srEl.textContent = swP == null ? '—' : swP >= 0.70 ? 'HIGH' : swP >= 0.45 ? 'ELEVATED' : 'LOW';
+    srEl.style.color = swP == null ? '' : swP >= 0.70 ? '#ef4444' : swP >= 0.45 ? '#f59e0b' : 'var(--teal)';
+
+    // Breakout quality
+    const bqV = c.breakout_quality;
+    const qEl = document.getElementById('deep-quality');
+    qEl.textContent = bqV == null ? '—' : bqV >= 0.70 ? 'STRONG' : bqV >= 0.45 ? 'MODERATE' : 'WEAK';
+    qEl.style.color = bqV == null ? '' : bqV >= 0.70 ? 'var(--teal)' : bqV >= 0.45 ? '#f59e0b' : 'var(--ink-3)';
+
+    // Wick Intelligence
+    const rejV = c.rejection_strength;
+    if (rejV != null) {
+      document.getElementById('deep-wick-section').style.display = 'block';
+      document.getElementById('deep-rejection').textContent = rejV.toFixed(2);
+      document.getElementById('deep-bq').textContent = bqV != null ? bqV.toFixed(2) : '—';
+      document.getElementById('deep-bc').textContent = c.body_commitment != null ? c.body_commitment.toFixed(2) : '—';
+      const spEl = document.getElementById('deep-sp');
+      spEl.textContent = swP != null ? swP.toFixed(2) : '—';
+      spEl.style.color = (swP != null && swP >= 0.70) ? '#f59e0b' : '';
+      spEl.style.fontWeight = (swP != null && swP >= 0.70) ? '700' : '';
+    }
+
+    // Market State grid
+    document.getElementById('dms-pressure').textContent =
+      pressureState === 'HIGH' ? 'Active — above threshold' :
+      pressureState === 'ELEVATED' ? 'Building — near threshold' :
+      pressureState === 'MODERATE' ? 'Moderate — watch' : 'Low — compressing';
+    const expV = c.expansion_pressure;
+    document.getElementById('dms-expansion').textContent =
+      expV == null ? '—' :
+      expV >= 0.60 ? 'Trending — momentum confirmed' :
+      expV >= 0.35 ? 'Emerging — developing' : 'Compressed — no expansion';
+    const compV = c.compression_score;
+    document.getElementById('dms-structure').textContent =
+      compV == null ? '—' :
+      compV < 0.30 ? 'Tight — energy building' :
+      compV < 0.60 ? 'Moderate — neutral' : 'Wide — volatility present';
+    document.getElementById('dms-liquidity').textContent =
+      (c.liquidity_type || '—').replace('_', ' ');
+    const rsiV = c.rsi_stage || '—';
+    document.getElementById('dms-momentum').textContent =
+      rsiV === 'OVERSOLD'   ? 'Oversold — reversal zone' :
+      rsiV === 'OVERBOUGHT' ? 'Overbought — caution' :
+      rsiV === 'BULLISH'    ? 'Bullish — upward bias' :
+      rsiV === 'BEARISH'    ? 'Bearish — downward bias' :
+      rsiV === 'NEUTRAL'    ? 'Neutral — no bias' : rsiV;
+
+  } catch {}
+
+  // Signal from cache
+  const signals = cache.signals;
+  if (signals) {
+    const allSigs = [...(signals.active||[]), ...(signals.closed||[])];
+    const tickerSigs = allSigs.filter(s => s.ticker === symbol);
+    const active = tickerSigs.find(s => s.status === 'RUNNING' || (!s.outcome));
+    const history = tickerSigs.filter(s => s.outcome && s.outcome !== 'NO_FILL').slice(0, 5);
+
+    if (active) {
+      document.getElementById('deep-signal-wrap').style.display = 'block';
+      document.getElementById('deep-entry').textContent = formatPrice(active.entry);
+      document.getElementById('deep-sl').textContent    = formatPrice(active.sl);
+      document.getElementById('deep-tp').textContent    = formatPrice(active.tp);
+      document.getElementById('deep-signal-meta').textContent =
+        `${active.direction || '—'} · ${active.interval || '—'} · ${active.age || '—'}`;
+
+      const pct = active.running_pct || 0;
+      const pctStr = `${pct > 0 ? '+' : ''}${pct}%`;
+      document.getElementById('deep-running-pct').textContent = pctStr;
+      document.getElementById('deep-running-pct').style.color =
+        pct > 0 ? 'var(--teal)' : pct < 0 ? 'var(--red)' : 'var(--ink-2)';
+
+      // Progress bar: where price is between SL and TP
+      const range = Math.abs((active.tp||0) - (active.sl||0));
+      const move  = Math.abs((active.entry||0) - (active.sl||0)) + Math.abs((active.entry||0) * pct/100);
+      const prog  = range > 0 ? Math.min(Math.max((move / range) * 100, 5), 95) : 50;
+      document.getElementById('deep-progress-fill').style.width   = `${prog}%`;
+      document.getElementById('deep-progress-marker').style.left  = `${prog}%`;
+    }
+
+    if (history.length) {
+      document.getElementById('deep-history').innerHTML = history.map(h => `
+        <div class="deep-history-row">
+          <div>
+            <div style="font-family:var(--font-mono);font-size:12px">${h.direction} · ${h.interval}</div>
+            <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3)">${h.age}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-family:var(--font-mono);font-size:14px;color:${h.result_pct > 0 ? 'var(--teal)' : 'var(--red)'}">${h.result_pct > 0 ? '+' : ''}${h.result_pct}%</div>
+            <div style="font-family:var(--font-mono);font-size:9px;color:${h.outcome==='TP_HIT'?'var(--teal)':'var(--red)'};letter-spacing:1px">${h.outcome}</div>
+          </div>
+        </div>`).join('');
+    } else {
+      document.getElementById('deep-history').innerHTML =
+        '<div style="font-family:var(--font-mono);font-size:11px;color:var(--ink-3);padding:8px 0">No closed history yet.</div>';
+    }
+  }
+}
+
+
+
+// ── STATE DETAIL DRAWER ───────────────────────────────────────
+function openStateDetail(state) {
+  const labels = {
+    COMPRESSION: 'Building — expansion window opening soon',
+    TRENDING:    'Active — momentum confirmed',
+    EMERGING:    'Early — momentum developing',
+    EXHAUSTED:   'Caution — post-expansion zone',
+    NEUTRAL:     'Ranging — no clear bias'
+  };
+  const data = cache.watchlist || cache.context;
+  if (!data) return;
+
+  document.getElementById('state-drawer-eyebrow').textContent = 'Market State';
+  document.getElementById('state-drawer-title').textContent   = state;
+
+  const assets = data.groups
+    ? (data.groups[state] || [])
+    : (data.assets || []).filter(a => a.market_state === state);
+
+  const list = document.getElementById('state-detail-list');
+
+  if (!assets.length) {
+    list.innerHTML = `<div class="empty-state">No assets in ${state} state.</div>`;
+  } else {
+    // Sort by compression
+    const sorted = [...assets].sort((a,b) =>
+      (b.context?.compression||0) - (a.context?.compression||0));
+
+    list.innerHTML = `
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3);margin-bottom:16px;line-height:1.6">
+        ${labels[state] || ''}
+      </div>
+      ${sorted.map(a => {
+        const comp = a.context?.compression;
+        const exp  = a.context?.expansion;
+        const compStr = comp != null ? `${(comp*100).toFixed(0)}%` : '—';
+        const expStr  = exp  != null ? `${(exp *100).toFixed(0)}%` : '—';
+        return `
+          <div class="state-detail-row" data-symbol="${a.symbol}">
+            <div>
+              <div style="font-family:var(--font-mono);font-size:14px;font-weight:500;margin-bottom:3px">${a.symbol}</div>
+              <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3)">
+                Comp ${compStr} · Exp ${expStr} · ${a.context?.rsi_stage || '—'}
+              </div>
+            </div>
+            <div style="text-align:right">
+              ${a.signal ? `
+                <div style="font-family:var(--font-mono);font-size:12px;color:${a.signal.direction==='BUY'?'var(--teal)':'var(--red)'}">${a.signal.direction}</div>
+                <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3)">${a.signal.interval || ''} · ${a.signal.age || ''}</div>
+              ` : `<div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3)">No signal</div>`}
+            </div>
+          </div>`;
+      }).join('')}
+    `;
+  }
+
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('drawer-state').classList.add('open');
+}
+
+// ── DRAWER UTILS ──────────────────────────────────────────────
+function closeAllDrawers() {
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('drawer-deep').classList.remove('open');
+  document.getElementById('drawer-state').classList.remove('open');
+}
+
+// ── HELPERS ───────────────────────────────────────────────────
+function formatPrice(n) {
+  if (n == null) return '—';
+  if (n >= 1000) return n.toLocaleString('en-US', { maximumFractionDigits: 1 });
+  if (n >= 1)    return n.toFixed(4);
+  if (n >= 0.01) return n.toFixed(5);
+  return n.toFixed(6);
+}
+
+function togglePref(row) {
+  const t = row.querySelector('.toggle');
+  t.classList.toggle('on');
+}
+
+function showNotifNote() {
+  // Placeholder — future: notification drawer
+}
+
+// Logout: clear stored invite code and return to login screen
+function logout() {
+  if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode('');
+  localStorage.removeItem('sa_code');
+  CODE = '';
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login').style.display = 'flex';
+  document.getElementById('login').classList.remove('hidden');
+}
+
+// ── INIT ──────────────────────────────────────────────────────
+function initDashboard() {
+  loadBoard();
+  loadResolverFeed();
+
+  // Attach delegated event listeners (idempotent)
+  try { attachDelegatedListeners(); } catch (e) { /* ignore */ }
+
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    loadScreen(currentScreen);
+  }, REFRESH_MS);
+}
+
+// Delegated click handlers to replace inline onclick attributes
+function attachDelegatedListeners() {
+  if (window._saDelegatedAttached) return;
+  window._saDelegatedAttached = true;
+
+  document.addEventListener('click', function (ev) {
+    const el = ev.target;
+
+    // Nav tabs
+    const nav = el.closest('.nav-tab');
+    if (nav) {
+      const screen = nav.dataset.screen;
+      if (screen) { goTo(screen, nav); return; }
+    }
+
+    // Login button
+    const loginBtn = el.closest('#login-btn');
+    if (loginBtn) { doLogin(); return; }
+
+    // Bell buttons: notif vs logout
+    const bell = el.closest('.bell-btn');
+    if (bell) {
+      if (bell.dataset.action === 'logout' || bell.getAttribute('aria-label') === 'Logout') { logout(); }
+      else { showNotifNote(); }
+      return;
+    }
+
+    // State cells
+    const stateCell = el.closest('.state-cell');
+    if (stateCell && stateCell.dataset.state) { openStateDetail(stateCell.dataset.state); return; }
+
+    // Filter buttons
+    const fbtn = el.closest('.filter-btn');
+    if (fbtn && fbtn.dataset.tf) { setFilter(fbtn, fbtn.dataset.tf); return; }
+
+    // Preference toggles
+    const pref = el.closest('.pref-item');
+    if (pref && pref.dataset.action === 'toggle-pref') { togglePref(pref); return; }
+
+    // System health card
+    const sh = el.closest('#sys-health');
+    if (sh) { openSystemAudit(); return; }
+
+    // Overlay / drawer closes
+    if (el.closest('#overlay') || el.closest('.drawer-close')) { closeAllDrawers(); return; }
+
+    // Asset card -> deep view
+    const asset = el.closest('.asset-card');
+    if (asset && asset.dataset.symbol) { openDeepView(asset.dataset.symbol); return; }
+
+    // Signal row -> deep view
+    const srow = el.closest('.signal-row');
+    if (srow && srow.dataset.ticker) { openDeepView(srow.dataset.ticker); return; }
+
+    // Watch chip -> deep view
+    const chip = el.closest('.watch-chip');
+    if (chip && chip.dataset.symbol) { openDeepView(chip.dataset.symbol); return; }
+
+    // State detail row -> close and open deep
+    const sdr = el.closest('.state-detail-row');
+    if (sdr && sdr.dataset.symbol) { closeAllDrawers(); setTimeout(()=>openDeepView(sdr.dataset.symbol), 300); return; }
+
+    // Resolver pill goto signals
+    const rp = el.closest('.resolver-pill');
+    if (rp && rp.dataset.action === 'goto-signals') { goTo('pulse', document.querySelector('[data-screen=pulse]')); return; }
+  }, false);
+}
+// ── PRESSURE WATCH ──────────────────────────────────────
+let pwCurrentFilter = 'ALL';
+let pwAllAssets = [];
+
+function loadPressureWatch() {
+  fetch('/api/mobile/watchlist/live', { headers: { 'X-Invite-Code': CODE } })
+    .then(r => r.json())
+    .then(data => {
+      // watchlist/live returns data.groups (dict by state) — flatten to array
+      const allGroups = data.groups || {};
+      const assets = Object.values(allGroups).flat();
+
+      // Sort: by pressure_score DESC, ties broken by compression ASC
+      assets.sort((a, b) => {
+        const scoreDiff = (b.pressure_score || 0) - (a.pressure_score || 0);
+        if (scoreDiff !== 0) return scoreDiff;
+        return (a.context?.compression || 1) - (b.context?.compression || 1);
+      });
+
+      pwAllAssets = assets;
+
+      const counts = { EXTREME: 0, HIGH: 0, RISING: 0, LOW: 0 };
+      assets.forEach(a => {
+        const s = a.pressure_state || 'LOW';
+        if (counts[s] !== undefined) counts[s]++;
+      });
+      document.getElementById('pw-count-extreme').textContent = counts.EXTREME;
+      document.getElementById('pw-count-high').textContent    = counts.HIGH;
+      document.getElementById('pw-count-rising').textContent  = counts.RISING;
+      document.getElementById('pw-count-low').textContent     = counts.LOW;
+      document.getElementById('pw-meta').textContent =
+        `Ranked by Expansion Readiness \u00b7 ${assets.length} Assets`;
+
+      renderPressureList();
+    })
+    .catch(() => {
+      document.getElementById('pw-list').innerHTML =
+        '<div style="padding:24px;text-align:center;color:var(--ink-4);' +
+        'font-family:var(--mono);font-size:0.75rem;">LOAD ERROR</div>';
+    });
+}
+
+function renderPressureList() {
+  const filtered = pwCurrentFilter === 'ALL'
+    ? pwAllAssets
+    : pwAllAssets.filter(a => (a.pressure_state || 'LOW') === pwCurrentFilter);
+
+  const list = document.getElementById('pw-list');
+  if (!filtered.length) {
+    list.innerHTML =
+      '<div style="padding:24px;text-align:center;color:var(--ink-4);' +
+      'font-family:var(--mono);font-size:0.75rem;">NO ASSETS IN THIS BAND</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(a => buildPressureCard(a)).join('');
+}
+
+function buildPressureCard(a) {
+  const ctx   = a.context || {};
+  const state = a.pressure_state || 'LOW';
+  const score = a.pressure_score  || 0;
+  const comp  = ctx.compression != null ? ctx.compression.toFixed(2) : '\u2014';
+  const exp   = ctx.expansion   != null ? ctx.expansion.toFixed(2)   : '\u2014';
+  const rsi   = ctx.rsi_stage   || '\u2014';
+  const sweep = ctx.sweep;
+  const symbol = a.symbol || '';
+
+  // Quality row — only render if Phase 3 data is available
+  const rejStr  = ctx.rejection_strength  != null
+                  ? ctx.rejection_strength.toFixed(2)  : null;
+  const bqStr   = ctx.breakout_quality    != null
+                  ? ctx.breakout_quality.toFixed(2)    : null;
+  const spStr   = ctx.sweep_probability   != null
+                  ? ctx.sweep_probability.toFixed(2)   : null;
+
+  const hasQuality = rejStr !== null || bqStr !== null;
+
+  const qualityRow = hasQuality ? `
+    <div class="pw-card-row">
+      <div class="pw-field">
+        <span class="pw-field-label">REJECTION INDEX</span>
+        <span class="pw-field-value">${rejStr ?? '—'}</span>
+      </div>
+      <div class="pw-field">
+        <span class="pw-field-label">QUALITY SCORE</span>
+        <span class="pw-field-value">${bqStr ?? '—'}</span>
+      </div>
+      <div class="pw-field">
+        <span class="pw-field-label">SWEEP RISK</span>
+        <span class="pw-field-value ${(ctx.sweep_probability || 0) >= 0.70
+          ? 'pw-sweep-high' : ''}">${spStr ?? '—'}</span>
+      </div>
+    </div>` : '';
+
+  const segs = [1,2,3,4,5].map(i => {
+    const filled = i <= score;
+    const extreme = filled && score === 5;
+    return `<div class="pw-score-seg${filled ? ' filled' + (extreme ? ' s5' : '') : ''}"></div>`;
+  }).join('');
+
+  const sweepHtml = sweep
+    ? '<div class="pw-sweep-chip">\u26a0 SWEEP DETECTED</div>'
+    : '';
+
+  return `
+    <div class="pw-card" data-state="${state}" onclick="openDeepView('${symbol}')">
+      <div class="pw-card-header">
+        <span class="pw-ticker">${symbol}</span>
+        <span class="pw-state-badge ${state}">${state}</span>
+      </div>
+      <div class="pw-card-row">
+        <div class="pw-field">
+          <span class="pw-field-label">VOLATILITY INDEX</span>
+          <span class="pw-field-value">${comp}</span>
+        </div>
+        <div class="pw-field">
+          <span class="pw-field-label">EXPANSION</span>
+          <span class="pw-field-value">${exp}</span>
+        </div>
+        <div class="pw-field">
+          <span class="pw-field-label">MOMENTUM STAGE</span>
+          <span class="pw-field-value">${rsi}</span>
+        </div>
+      </div>
+      ${qualityRow}
+      <div class="pw-score-bar">${segs}</div>
+      ${sweepHtml}
+    </div>`;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const pwf = document.querySelector('.pw-filters');
+  if (pwf) {
+    pwf.addEventListener('click', e => {
+      const pill = e.target.closest('.pw-pill');
+      if (!pill) return;
+      document.querySelectorAll('.pw-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      pwCurrentFilter = pill.dataset.filter;
+      renderPressureList();
+    });
+  }
+});
+
+</script>
+</body>
+</html>
