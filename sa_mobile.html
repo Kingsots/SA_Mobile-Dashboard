@@ -1206,6 +1206,68 @@ body::before {
   text-transform: uppercase;
 }
 
+/* ── PROFILE FOOTER ──────────────────────────────────── */
+.profile-footer {
+  margin: var(--sp-8) var(--sp-5) var(--sp-6);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--border-faint);
+}
+
+.profile-footer-brand {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-2);
+  letter-spacing: 0.1em;
+  text-align: center;
+  margin-bottom: var(--sp-4);
+}
+
+.profile-footer-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.05em;
+  margin-bottom: var(--sp-5);
+}
+
+.profile-footer-sep {
+  color: var(--border-2);
+}
+
+.profile-footer-disclaimer {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--ink-3);
+  line-height: 1.8;
+  text-align: center;
+  margin-bottom: var(--sp-5);
+}
+
+.profile-footer-copy {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-disabled);
+  text-align: center;
+  line-height: 1.7;
+  letter-spacing: 0.05em;
+}
+
+.login-disclaimer {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--ink-disabled);
+  line-height: 1.7;
+  text-align: center;
+  padding: var(--sp-5) var(--sp-6) 0;
+  max-width: 320px;
+  margin: 0 auto;
+}
+
 /* ── RSI / SWEEP BADGES ──────────────────────────────── */
 .badge {
   display: inline-flex; align-items: center;
@@ -1590,7 +1652,7 @@ body::before {
 <!-- ── LOGIN ──────────────────────────────────────────── -->
 <div id="login">
   <p class="login-logo">SILENT<span>ANALYST</span></p>
-  <p class="login-sub">Intelligence Engine · SA-2</p>
+  <p class="login-sub">Intelligence Engine · SA·3</p>
   <div class="login-card">
     <p class="login-label">Enter Invite Code</p>
     <div class="login-input-wrap">
@@ -1599,6 +1661,11 @@ body::before {
     </div>
     <button class="login-btn" id="login-btn">UNLOCK</button>
     <div class="login-error" id="login-error"></div>
+  </div>
+  <div class="login-disclaimer">
+    Silent Analyst provides probabilistic market intelligence
+    for informational purposes only. Not financial advice.
+    All decisions remain the sole responsibility of the user.
   </div>
 </div>
 
@@ -1871,8 +1938,8 @@ body::before {
       </div>
 
       <div class="stats-grid" style="margin-bottom:24px">
-        <div class="stat-cell"><div class="stat-val" id="prof-signals" style="color:var(--teal)">—</div><div class="stat-label">Signals</div></div>
-        <div class="stat-cell"><div class="stat-val" id="prof-winrate">—</div><div class="stat-label">All-Time Win %</div></div>
+        <div class="stat-cell"><div class="stat-val" id="prof-signals" style="color:var(--teal)">—</div><div class="stat-label">Intelligence Events</div></div>
+        <div class="stat-cell"><div class="stat-val" id="prof-winrate">—</div><div class="stat-label">Historical Outcome Rate</div></div>
         <!-- Q2 intentionally hardcoded — no season field in /stats API yet -->
         <div class="stat-cell"><div class="stat-val" id="prof-season">Q2</div><div class="stat-label">Season</div></div>
         <div class="stat-cell"><div class="stat-val" id="prof-engine">SA·3</div><div class="stat-label">Engine</div></div>
@@ -1929,9 +1996,37 @@ body::before {
         </div>
       </div>
 
-      <div style="text-align:center; padding: 16px; font-family:var(--font-mono); font-size:9px; color:var(--ink-3)">
-        OPTICORE LABS · OPTICORE.AFRICA
-      </div>
+  <div class="profile-footer">
+
+    <div class="profile-footer-brand">
+      Silent Analyst &nbsp;·&nbsp; SA·3 &nbsp;·&nbsp; OptiCore Labs
+    </div>
+
+    <div class="profile-footer-links">
+      <span>Terms of Use</span>
+      <span class="profile-footer-sep">·</span>
+      <span>Privacy Policy</span>
+      <span class="profile-footer-sep">·</span>
+      <span>Risk Disclosure</span>
+    </div>
+
+    <div class="profile-footer-disclaimer">
+      Silent Analyst provides probabilistic market intelligence
+      and contextual analytics for informational and observational
+      purposes only. The platform does not provide financial,
+      investment, legal, or trading advice. Market conditions are
+      inherently volatile. All decisions remain the sole
+      responsibility of the user. Always conduct independent
+      research and risk assessment before acting on any platform
+      observation.
+    </div>
+
+    <div class="profile-footer-copy">
+      © 2026 OptiCore Labs. All rights reserved.<br>
+      Market data provided for contextual analysis only.
+    </div>
+
+  </div>
     </div>
 
   </div><!-- /screens -->
