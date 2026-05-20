@@ -1505,10 +1505,10 @@ body::before {
   align-items: center;
 }
 .deepview-eyebrow {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.6rem;
   letter-spacing: 0.1em;
-  color: var(--ink-4);
+  color: var(--ink-3);
 }
 .deepview-close {
   background: transparent;
@@ -1519,7 +1519,7 @@ body::before {
   padding: 2px 6px;
 }
 .deepview-title {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 1.1rem;
   font-weight: 700;
   color: var(--gold);
@@ -1527,9 +1527,9 @@ body::before {
   margin-top: 4px;
 }
 .deepview-meta {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.6rem;
-  color: var(--ink-4);
+  color: var(--ink-3);
   margin-top: 4px;
   letter-spacing: 0.06em;
 }
@@ -1539,7 +1539,7 @@ body::before {
 .dv-card {
   margin: 0 16px 10px;
   padding: 12px 14px;
-  background: var(--ink-1);
+  background: var(--surface);
   border-radius: 8px;
   border-left: 3px solid var(--ink-3);
 }
@@ -1547,10 +1547,10 @@ body::before {
 .dv-card[data-cat="PRESSURE"]    { border-left-color: var(--teal); }
 .dv-card[data-cat="SWEEP"]       { border-left-color: var(--state-warn); }
 .dv-card[data-cat="EXPANSION"]   { border-left-color: var(--green); }
-.dv-card[data-cat="SIGNAL"]      { border-left-color: var(--white); }
+.dv-card[data-cat="SIGNAL"]      { border-left-color: var(--ink); }
 .dv-card[data-cat="SYSTEM"]      { border-left-color: var(--ink-3); }
 .dv-cat-tag {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.55rem;
   letter-spacing: 0.1em;
   font-weight: 700;
@@ -1560,8 +1560,8 @@ body::before {
 .dv-card[data-cat="PRESSURE"]    .dv-cat-tag { color: var(--teal); }
 .dv-card[data-cat="SWEEP"]       .dv-cat-tag { color: var(--state-warn); }
 .dv-card[data-cat="EXPANSION"]   .dv-cat-tag { color: var(--green); }
-.dv-card[data-cat="SIGNAL"]      .dv-cat-tag { color: var(--white); }
-.dv-card[data-cat="SYSTEM"]      .dv-cat-tag { color: var(--ink-4); }
+.dv-card[data-cat="SIGNAL"]      .dv-cat-tag { color: var(--ink); }
+.dv-card[data-cat="SYSTEM"]      .dv-cat-tag { color: var(--ink-3); }
 .dv-card-text {
   font-family: var(--font-body, sans-serif);
   font-size: 0.8rem;
@@ -1573,10 +1573,10 @@ body::before {
   padding: 8px 0 4px;
 }
 .dv-refresh-btn {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 0.6rem;
   letter-spacing: 0.08em;
-  color: var(--ink-4);
+  color: var(--ink-3);
   background: transparent;
   border: 1px solid var(--ink-3);
   border-radius: 12px;
@@ -1614,7 +1614,7 @@ body::before {
 }
 .deep-pw-badge[data-state="HIGH"]     { background: rgba(239,68,68,0.15); color: var(--red); }
 .deep-pw-badge[data-state="ELEVATED"] { background: rgba(245,158,11,0.15); color: var(--state-warn); }
-.deep-pw-badge[data-state="MODERATE"] { background: rgba(99,102,241,0.15); color: #818cf8; }
+.deep-pw-badge[data-state="MODERATE"] { background: var(--gold-bg); color: var(--gold-dim); }
 .deep-pw-badge[data-state="LOW"]      { background: rgba(20,184,166,0.15); color: var(--teal); }
 .deep-score-bar {
   display: flex;
@@ -1628,7 +1628,7 @@ body::before {
 }
 .deep-score-seg.active-1 { background: var(--teal); }
 .deep-score-seg.active-2 { background: var(--teal); }
-.deep-score-seg.active-3 { background: #818cf8; }
+.deep-score-seg.active-3 { background: var(--gold); }
 .deep-score-seg.active-4 { background: var(--state-warn); }
 .deep-score-seg.active-5 { background: var(--red); }
 .deep-mkt-grid {
@@ -2127,7 +2127,7 @@ body::before {
       <div class="metric-bar"><div class="metric-bar-fill exp" id="deep-exp-bar" style="width:0%"></div></div>
     </div>
     <div class="deep-ctx-cell">
-      <div class="deep-ctx-label">RSI Stage</div>
+      <div class="deep-ctx-label">Momentum Stage</div>
       <div class="deep-ctx-val" id="deep-rsi" style="font-size:16px">—</div>
     </div>
     <div class="deep-ctx-cell">
@@ -2139,20 +2139,20 @@ body::before {
   <!-- Active Signal -->
   <div id="deep-signal-wrap" style="display:none">
     <div style="padding:0 20px;margin-bottom:8px">
-      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Active Signal</div>
+      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Active Observation</div>
     </div>
     <div class="deep-signal-card">
       <div class="deep-levels">
         <div class="deep-level sl">
-          <div class="deep-level-label">Stop Loss</div>
+          <div class="deep-level-label">Risk Boundary</div>
           <div class="deep-level-val" id="deep-sl">—</div>
         </div>
         <div class="deep-level entry">
-          <div class="deep-level-label">Entry</div>
+          <div class="deep-level-label">Reference Level</div>
           <div class="deep-level-val" id="deep-entry">—</div>
         </div>
         <div class="deep-level tp">
-          <div class="deep-level-label">Take Profit</div>
+          <div class="deep-level-label">Expansion Target</div>
           <div class="deep-level-val" id="deep-tp">—</div>
         </div>
       </div>
@@ -2170,7 +2170,7 @@ body::before {
   <!-- Signal History -->
   <div id="deep-history-wrap">
     <div style="padding:0 20px;margin-bottom:8px">
-      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Signal History</div>
+      <div style="font-family:var(--font-mono);font-size:9px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase">Observation History</div>
     </div>
     <div id="deep-history" style="padding:0 20px"></div>
   </div>
@@ -2211,7 +2211,7 @@ body::before {
         <div class="deep-ctx-val" id="deep-rejection">—</div>
       </div>
       <div class="deep-pw-cell">
-        <div class="deep-ctx-label">Breakout Q</div>
+        <div class="deep-ctx-label">Quality Score</div>
         <div class="deep-ctx-val" id="deep-bq">—</div>
       </div>
       <div class="deep-pw-cell">
@@ -2219,7 +2219,7 @@ body::before {
         <div class="deep-ctx-val" id="deep-bc">—</div>
       </div>
       <div class="deep-pw-cell">
-        <div class="deep-ctx-label">Sweep Prob</div>
+        <div class="deep-ctx-label">Sweep Risk</div>
         <div class="deep-ctx-val" id="deep-sp">—</div>
       </div>
     </div>
@@ -3042,7 +3042,7 @@ async function loadDeepView(forceRefresh = false) {
   } catch(e) {
     feedEl.innerHTML =
       `<div class="empty-state" style="padding:24px;text-align:center;` +
-      `font-family:var(--mono);font-size:0.75rem;color:var(--ink-4)">` +
+      `font-family:var(--font-mono);font-size:0.75rem;color:var(--ink-3)">` +
       `LOAD ERROR</div>`;
     metaEl.textContent = 'Failed to load';
   }
@@ -3536,8 +3536,8 @@ function loadPressureWatch() {
     })
     .catch(() => {
       document.getElementById('pw-list').innerHTML =
-        '<div style="padding:24px;text-align:center;color:var(--ink-4);' +
-        'font-family:var(--mono);font-size:0.75rem;">LOAD ERROR</div>';
+        '<div style="padding:24px;text-align:center;color:var(--ink-3);' +
+        'font-family:var(--font-mono);font-size:0.75rem;">LOAD ERROR</div>';
     });
 }
 
@@ -3549,8 +3549,8 @@ function renderPressureList() {
   const list = document.getElementById('pw-list');
   if (!filtered.length) {
     list.innerHTML =
-      '<div style="padding:24px;text-align:center;color:var(--ink-4);' +
-      'font-family:var(--mono);font-size:0.75rem;">NO ASSETS IN THIS BAND</div>';
+      '<div style="padding:24px;text-align:center;color:var(--ink-3);' +
+      'font-family:var(--font-mono);font-size:0.75rem;">NO ASSETS IN THIS BAND</div>';
     return;
   }
   list.innerHTML = filtered.map(a => buildPressureCard(a)).join('');
