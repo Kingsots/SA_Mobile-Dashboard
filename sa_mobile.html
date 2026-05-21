@@ -1112,6 +1112,48 @@ body::before {
 }
 .metric-bar-fill.comp { background: var(--gold); }
 .metric-bar-fill.exp  { background: var(--teal); }
+.deep-reading-wrap {
+  margin: 0 20px 16px;
+  border: 1px solid var(--gold-dim);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.deep-reading-trigger {
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-faint);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.deep-reading-trigger:active { opacity: 0.7; }
+.deep-reading-disclaimer {
+  padding: 8px 16px 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.deep-reading-body {
+  padding: 8px 16px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.deep-reading-result { display: none; }
+.deep-reading-result.visible { display: block; }
 .deep-signal-card {
   margin: 0 20px 16px;
   background: var(--surface);
@@ -1660,6 +1702,16 @@ body::before {
 .deep-mkt-key { color: var(--ink-3); }
 .deep-mkt-val { color: var(--ink); font-weight: 500; }
 </style>
+<script>
+    !function(t,e){var o,n,p,r;e.__SV||(window.posthog&&window.posthog.__loaded)||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="Mi Ri init Vi Gi Rr Wi Ji Bi capture calculateEventProperties tn register register_once register_for_session unregister unregister_for_session an getFeatureFlag getFeatureFlagPayload getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey displaySurvey cancelPendingSurvey canRenderSurvey canRenderSurveyAsync un identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset setIdentity clearIdentity get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException addExceptionStep captureLog startExceptionAutocapture stopExceptionAutocapture loadToolbar get_property getSessionProperty nn Xi createPersonProfile setInternalOrTestUser sn Hi cn opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing get_explicit_consent_status is_capturing clear_opt_in_out_capturing Ki debug Lr rn getPageViewId captureTraceFeedback captureTraceMetric Di".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+    posthog.init('phc_yDtqMwSdEnG7kcbcFTVqoDdhm4ahaVvnWdRqMhc37idb', {
+        api_host: 'https://us.i.posthog.com',
+        defaults: '2026-01-30',
+        person_profiles: 'identified_only',
+        autocapture: false,
+        capture_pageview: false
+    });
+</script>
 </head>
 <body>
 
@@ -2251,6 +2303,17 @@ body::before {
     </div>
   </div>
 
+  <!-- Contextual Reading -->
+  <div class="deep-reading-wrap">
+    <button class="deep-reading-trigger" id="deep-reading-btn" onclick="readMarketState()">
+      <span>Read State</span><span>→</span>
+    </button>
+    <div class="deep-reading-result" id="deep-reading-result">
+      <div class="deep-reading-disclaimer">── Contextual Reading &nbsp;·&nbsp; Observational analysis only. Not financial advice.</div>
+      <div class="deep-reading-body" id="deep-reading-body"></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- State Detail Drawer -->
@@ -2269,7 +2332,8 @@ body::before {
 <script src="api.js"></script>
 <script>
 // ── CONFIG ────────────────────────────────────────────────────
-const API_BASE = (window.SA_API_BASE) ? window.SA_API_BASE : 'http://54.254.214.56:5001/api/mobile';
+const API_BASE = (window.SA_API_BASE) ? window.SA_API_BASE
+  : (window.location.origin || 'http://54.254.214.56') + '/api/mobile';
 const REFRESH_MS = 30000;
 const TF_MAP = { '30M':'30m', '1H':'1h', '4H':'4h', '1D':'1d' };
 
@@ -2347,31 +2411,53 @@ async function doLogin() {
   err.textContent = '';
 
   try {
-    // Prefer auth endpoint via SA_API when available
-    if (window.SA_API && typeof window.SA_API.auth === 'function') {
-      const res = await window.SA_API.auth(code, { retries: 0 });
-      if (!res.ok) throw new Error((res.error && res.error.message) || res.error || 'Invalid invite code');
-    } else {
-      // Fallback: POST to /auth with proper JSON encoding as a last resort
+    // Phase 1B fix — new invite system is primary
+    let loginSuccess = false;
+    let loginRole = 'beta';
+    let loginSession = null;
+
+    try {
+      const inviteRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: code.trim().toUpperCase() })
+      });
+      const inviteData = await inviteRes.json();
+      if (inviteData.success) {
+        loginSuccess = true;
+        loginRole = inviteData.role || 'beta';
+        loginSession = inviteData.session_id;
+        localStorage.setItem('sa_session_id', loginSession);
+        localStorage.setItem('sa_role', loginRole);
+        localStorage.setItem('sa_code', code.trim().toUpperCase());
+        if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') SA_API.setStoredCode(code.trim().toUpperCase());
+        if (window.posthog) {
+          posthog.identify(loginSession, { role: loginRole, invite_code: code, platform: 'mobile_web' });
+          posthog.capture('login_success', { role: loginRole, invite_code: code });
+        }
+      }
+    } catch(e) {}
+
+    if (!loginSuccess) {
+      // fallback to legacy system
       try {
-        const fallbackRes = await fetch(`${API_BASE}/auth`, {
+        const legacyRes = await fetch(`${API_BASE}/auth`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code })
+          body: JSON.stringify({ code: code.trim().toUpperCase() })
         });
-        let fallbackJson = null;
-        try { fallbackJson = await fallbackRes.json(); } catch (e) { /* ignore parse errors */ }
-        if (!fallbackRes.ok || !fallbackJson || !fallbackJson.valid) {
-          throw new Error((fallbackJson && fallbackJson.message) || `Invalid invite code`);
+        const legacyData = await legacyRes.json();
+        if (legacyData.success || legacyData.valid) {
+          loginSuccess = true;
+          if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') SA_API.setStoredCode(code.trim().toUpperCase());
+          localStorage.setItem('sa_code', code.trim().toUpperCase());
         }
-      } catch (e) {
-        throw e;
-      }
+      } catch(e) {}
     }
 
-    // Persist using SA_API primary key and legacy fallback for compatibility
-    if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode(code);
-    localStorage.setItem('sa_code', code);
+    if (!loginSuccess) {
+      throw new Error('Invalid invite code');
+    }
     CODE = code;
 
     document.getElementById('login').classList.add('hidden');
@@ -2381,10 +2467,9 @@ async function doLogin() {
       document.getElementById('app').style.flexDirection = 'column';
       initDashboard();
     }, 400);
-  } catch (err) {
+  } catch (e) {
     CODE = '';
-    err = document.getElementById('login-error');
-    document.getElementById('login-error').textContent = (err && err.message) ? err.message : (err && err.toString()) || 'Invalid invite code. Try again.';
+    err.textContent = e.message || e.toString() || 'Invalid invite code. Try again.';
     btn.disabled = false;
     btn.textContent = 'UNLOCK';
   }
@@ -2408,6 +2493,68 @@ document.getElementById('code-input').addEventListener('keydown', e => {
     document.getElementById('app').style.display = 'flex';
     document.getElementById('app').style.flexDirection = 'column';
     initDashboard();
+        // Phase 1B - validate or recover session on auto-login
+        (function() {
+          var sid = localStorage.getItem('sa_session_id');
+          if (sid) {
+            fetch('/api/auth/validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sid })
+            }).then(r => r.json()).then(d => {
+              if (!d.valid) {
+                localStorage.removeItem('sa_session_id');
+                localStorage.removeItem('sa_role');
+                var code = localStorage.getItem('sa_code');
+                if (code) {
+                  fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code })
+                  }).then(r2 => r2.json()).then(d2 => {
+                    if (d2.success) {
+                      localStorage.setItem('sa_session_id', d2.session_id);
+                      localStorage.setItem('sa_role', d2.role || 'beta');
+                    }
+                  }).catch(() => {});
+                }
+              } else {
+                fetch('/api/auth/event', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    session_id: sid,
+                    event_type: 'session_resume',
+                    page: 'home'
+                  })
+                }).catch(() => {});
+                  // Phase 3 -- PostHog identify on session resume
+                  if (window.posthog) {
+                    var _role = localStorage.getItem('sa_role') || 'beta';
+                    posthog.identify(sid, {
+                      role: _role,
+                      platform: 'mobile_web'
+                    });
+                    posthog.capture('session_resume', { role: _role });
+                  }
+              }
+            }).catch(() => {});
+          } else {
+            var code = localStorage.getItem('sa_code');
+            if (code) {
+              fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code: code })
+              }).then(r => r.json()).then(d => {
+                if (d.success) {
+                  localStorage.setItem('sa_session_id', d.session_id);
+                  localStorage.setItem('sa_role', d.role || 'beta');
+                }
+              }).catch(() => {});
+            }
+          }
+        })();
   } catch (e) {
     // invalid/expired — clear stored code and show login
     if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode('');
@@ -2825,12 +2972,8 @@ function buildSignalRow(s, outcome) {
     const firePressure = s.ctx_pressure_state || 'LOW';
     const sweepStr     = s.ctx_sweep === 1 ? 'YES'
                        : s.ctx_sweep === 0 ? 'NO' : null;
-    const sweepPart    = sweepStr != null
-      ? ` · Sweep Interaction: ${sweepStr}` : '';
-    const line1 = `Context at observation: ` +
-                  `Pressure ${firePressure} · ` +
-                  `Momentum Stage ${s.ctx_rsi_stage || '—'}` +
-                  `${sweepPart}`;
+    const sweepPart    = sweepStr != null ? ` · ${sweepStr}` : '';
+    const line1 = `${firePressure} · ${s.ctx_rsi_stage || '—'}${sweepPart}`;
 
     let line2 = '';
     if (s.ctx_rejection != null) {
@@ -2844,10 +2987,8 @@ function buildSignalRow(s, outcome) {
       const spClass = (s.ctx_sweep_prob || 0) >= 0.70
         ? ' ctx-sweep-warn' : '';
       line2 = `<span class="signal-fire-ctx-wick">` +
-              `Rejection ${rej} · ` +
-              `Quality ${bq} · ` +
-              `Body Strength ${bc} · ` +
-              `Sweep Risk <span class="${spClass}">${sp}</span>` +
+              `${rej}  ${bq}  ${bc}  ` +
+              `<span class="${spClass}">${sp}</span>` +
               `</span>`;
     }
 
@@ -3187,6 +3328,8 @@ async function openDeepView(symbol) {
   for (let i = 1; i <= 5; i++) document.getElementById(`dss${i}`).className = 'deep-score-seg';
   document.getElementById('deep-signal-wrap').style.display = 'none';
   document.getElementById('deep-history').innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+  document.getElementById('deep-reading-result').classList.remove('visible');
+  document.getElementById('deep-reading-body').textContent = '';
 
   overlay.classList.add('open');
   drawer.classList.add('open');
@@ -3396,11 +3539,36 @@ function openStateDetail(state) {
   document.getElementById('drawer-state').classList.add('open');
 }
 
+// ── CONTEXTUAL READING ────────────────────────────────────────
+async function readMarketState() {
+  const sym = document.getElementById('deep-title').textContent;
+  if (!sym || sym === '—') return;
+  const btn    = document.getElementById('deep-reading-btn');
+  const result = document.getElementById('deep-reading-result');
+  const body   = document.getElementById('deep-reading-body');
+  btn.querySelector('span').textContent = 'Reading market state…';
+  btn.disabled = true;
+  result.classList.remove('visible');
+  try {
+    const data = await api(`/context-reading/${sym}`);
+    body.textContent = data.reading || 'No reading available.';
+    result.classList.add('visible');
+  } catch (e) {
+    body.textContent = 'Context reading unavailable at this time.';
+    result.classList.add('visible');
+  } finally {
+    btn.querySelector('span').textContent = 'Read State';
+    btn.disabled = false;
+  }
+}
+
 // ── DRAWER UTILS ──────────────────────────────────────────────
 function closeAllDrawers() {
   document.getElementById('overlay').classList.remove('open');
   document.getElementById('drawer-deep').classList.remove('open');
   document.getElementById('drawer-state').classList.remove('open');
+  document.getElementById('deep-reading-result').classList.remove('visible');
+  document.getElementById('deep-reading-body').textContent = '';
 }
 
 // ── HELPERS ───────────────────────────────────────────────────
@@ -3425,6 +3593,10 @@ function showNotifNote() {
 function logout() {
   if (window.SA_API && typeof window.SA_API.setStoredCode === 'function') window.SA_API.setStoredCode('');
   localStorage.removeItem('sa_code');
+  localStorage.removeItem('sa_session_id');
+  localStorage.removeItem('sa_role');
+  // Phase 3 -- reset PostHog identity on logout
+  if (window.posthog) { posthog.reset(); }
   CODE = '';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   document.getElementById('app').style.display = 'none';
@@ -3657,6 +3829,110 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// -- PHASE 2: EVENT INSTRUMENTATION ------
+(function () {
+  var TRACK_API = '/api/auth/event';
+  var HEARTBEAT_INTERVAL = 60000; // 60s
+
+  function getSession() {
+    return localStorage.getItem('sa_session_id');
+  }
+
+  function track(event_type, page, event_data) {
+    var sid = getSession();
+    if (!sid) return;
+    fetch(TRACK_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: sid,
+        event_type: event_type,
+        page: page || '',
+        event_data: event_data || ''
+      })
+    }).catch(() => {});
+    // Phase 3 -- mirror to PostHog (skip heartbeat to avoid noise)
+    if (window.posthog && event_type !== 'heartbeat') {
+      posthog.capture(event_type, {
+        page: page || '',
+        event_data: event_data || ''
+      });
+    }
+  }
+
+  // -- 1. SCREEN NAVIGATION ---------------
+  var _origGoTo = window.goTo;
+  if (typeof _origGoTo === 'function') {
+    window.goTo = function(screenId) {
+      _origGoTo.apply(this, arguments);
+      track('screen_view', screenId, screenId);
+    };
+  }
+
+  // -- 2. NAV TAB CLICKS ------------------
+  document.addEventListener('click', function (e) {
+    var sid = getSession();
+    if (!sid) return;
+
+    var target = e.target;
+
+    var navEl = target.closest
+      ? target.closest('[data-screen],[data-tab],[data-nav]')
+      : null;
+    if (!navEl) {
+      navEl = target.dataset && target.dataset.screen ? target : null;
+    }
+    if (navEl) {
+      var dest = navEl.dataset.screen || navEl.dataset.tab || navEl.dataset.nav || '';
+      if (dest) track('tab_click', dest, dest);
+    }
+
+    if (target.closest) {
+      var signalEl = target.closest('.signal-card,.signal-item,.signal-row');
+      if (signalEl) {
+        var ticker = signalEl.dataset.ticker || signalEl.dataset.symbol || '';
+        track('signal_expand', 'signals', ticker);
+      }
+
+      var watchEl = target.closest('.watchlist-item,.watch-row,.watch-card');
+      if (watchEl) {
+        var asset = watchEl.dataset.ticker || watchEl.dataset.symbol || '';
+        track('asset_focus', 'watchlist', asset);
+      }
+
+      var modalEl = target.closest('[data-modal],[data-drawer]');
+      if (modalEl) {
+        var modalId = modalEl.dataset.modal || modalEl.dataset.drawer || '';
+        var activeScr = document.querySelector('.screen.active');
+        track('modal_open', activeScr ? activeScr.id : '', modalId);
+      }
+    }
+  }, true);
+
+  // -- 3. HEARTBEAT -----------------------
+  setInterval(function () {
+    var sid = getSession();
+    if (!sid) return;
+    var activeScreen = document.querySelector('.screen.active');
+    var page = activeScreen ? activeScreen.id : 'unknown';
+    track('heartbeat', page, '');
+  }, HEARTBEAT_INTERVAL);
+
+  // -- 4. PAGE VISIBILITY -----------------
+  document.addEventListener('visibilitychange', function () {
+    var sid = getSession();
+    if (!sid) return;
+    var activeScreen = document.querySelector('.screen.active');
+    var page = activeScreen ? activeScreen.id : 'unknown';
+    if (document.hidden) {
+      track('app_background', page, '');
+    } else {
+      track('app_foreground', page, '');
+    }
+  });
+
+})();
+// -- END PHASE 2 --------------------------
 </script>
 </body>
 </html>
