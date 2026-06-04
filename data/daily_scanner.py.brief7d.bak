@@ -1,0 +1,695 @@
+"""
+Daily Market Scanner
+=====================
+Filters all Bybit USDT perpetuals through a 4-stage pipeline
+to produce a dynamic daily watchlist.
+
+Filter Stack:
+  1. Liquidity Gate:   turnover24h >= $20M
+  2. Volatility Gate:  ATR(14) > 5% of price (fallback 3%)
+  3. Momentum Trigger: change_from_open >= +5% or <= -5% (fallback 3%)
+  4. Volume Gate:      volume24h between $5M and $1B
+
+Permanent baseline: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT (bypass all filters)
+
+Output:
+  - active_watchlist table   (runtime, queried by signal engines)
+  - daily_watchlist_snapshot (history, for analysis)
+"""
+
+import asyncio
+import sqlite3
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from core.database import DatabaseManager
+from data.bybit_futures_fetcher import BybitFuturesFetcher
+
+logger = logging.getLogger(__name__)
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+BASELINE_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
+
+# Primary thresholds
+MIN_TURNOVER_USD      = 20_000_000     # $20M
+MIN_ATR_PCT           = 5.0            # 5%
+MIN_MOMENTUM_PCT      = 5.0            # ±5% from open
+MIN_VOLUME_USD        = 5_000_000      # $5M
+MAX_VOLUME_USD        = 1_000_000_000  # $1B
+
+# Fallback thresholds (activated if watchlist < 3 assets)
+MIN_ATR_PCT_FALLBACK      = 3.0
+MIN_MOMENTUM_PCT_FALLBACK = 3.0
+MINIMUM_WATCHLIST_SIZE    = 3
+
+# ATR lookback period
+ATR_PERIOD = 14
+
+# Refresh interval in hours
+REFRESH_HOURS = 96
+
+
+# ─── ATR Calculation ──────────────────────────────────────────────────────────
+
+def compute_atr_pct(df: pd.DataFrame, period: int = ATR_PERIOD) -> Optional[float]:
+    """
+    Compute ATR(14) as a percentage of current close price.
+
+    Args:
+        df: DataFrame with columns [high, low, close] in chronological order
+        period: ATR lookback period
+
+    Returns:
+        ATR as % of close, or None if insufficient data
+    """
+    if df is None or len(df) < period + 1:
+        return None
+
+    try:
+        high  = df["high"].values
+        low   = df["low"].values
+        close = df["close"].values
+
+        tr_list = []
+        for i in range(1, len(close)):
+            tr = max(
+                high[i] - low[i],
+                abs(high[i] - close[i - 1]),
+                abs(low[i]  - close[i - 1]),
+            )
+            tr_list.append(tr)
+
+        if len(tr_list) < period:
+            return None
+
+        atr = np.mean(tr_list[-period:])
+        current_price = close[-1]
+
+        if current_price <= 0:
+            return None
+
+        return (atr / current_price) * 100.0
+
+    except Exception as e:
+        logger.warning(f"[SCANNER] ATR calculation error: {e}")
+        return None
+
+
+# ─── Main Scanner Class ────────────────────────────────────────────────────────
+
+class DailyScanner:
+    """
+    Runs the 4-filter stack and manages watchlist tables.
+
+    Usage:
+        scanner = DailyScanner()
+        await scanner.run_scan(refresh_type='daily')   # 00:00 UTC
+        await scanner.run_scan(refresh_type='intraday') # 04:00-20:00 UTC
+    """
+
+    def __init__(self):
+        self.db = DatabaseManager()
+        self._ensure_tables()
+
+    def _ensure_tables(self):
+        """Create watchlist tables if they do not exist."""
+        try:
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+
+            # History table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_watchlist_snapshot (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    snapshot_date       TEXT NOT NULL,
+                    snapshot_time       TEXT NOT NULL,
+                    refresh_type        TEXT NOT NULL,
+                    symbol              TEXT NOT NULL,
+                    direction           TEXT NOT NULL,
+                    change_from_open_pct REAL,
+                    volume_24h          REAL,
+                    turnover_24h        REAL,
+                    atr_14_pct          REAL,
+                    fallback_activated  INTEGER DEFAULT 0,
+                    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_snapshot_date
+                ON daily_watchlist_snapshot(snapshot_date)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_snapshot_symbol
+                ON daily_watchlist_snapshot(symbol)
+            """)
+
+            # Runtime table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS active_watchlist (
+                    symbol              TEXT PRIMARY KEY,
+                    direction           TEXT NOT NULL,
+                    change_from_open_pct REAL,
+                    volume_24h          REAL,
+                    turnover_24h        REAL,
+                    atr_14_pct          REAL,
+                    added_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    expires_at          DATETIME NOT NULL,
+                    refresh_count       INTEGER DEFAULT 0
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_active_direction
+                ON active_watchlist(direction)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_active_expires
+                ON active_watchlist(expires_at)
+            """)
+
+            conn.commit()
+            logger.info("[SCANNER] Watchlist tables verified")
+
+        except Exception as e:
+            logger.error(f"[SCANNER] Table creation error: {e}")
+
+    async def run_scan(self, refresh_type: str = "intraday") -> Dict:
+        """
+        Execute the full 4-filter scan and update both tables.
+
+        Args:
+            refresh_type: 'daily' (00:00 UTC) or 'intraday' (every 4h)
+
+        Returns:
+            Dict with scan results summary
+        """
+        now_utc = datetime.now(timezone.utc)
+        logger.info(f"[SCANNER] Starting {refresh_type} scan at {now_utc.isoformat()}")
+
+        async with BybitFuturesFetcher() as fetcher:
+
+            # ── Step 1: Fetch all tickers (1 API call) ──────────────────────
+            tickers_df = await fetcher.fetch_all_tickers()
+            if tickers_df is None or tickers_df.empty:
+                logger.error("[SCANNER] Failed to fetch tickers — aborting scan")
+                return {"error": "ticker_fetch_failed"}
+
+            logger.info(f"[SCANNER] Universe: {len(tickers_df)} USDT perpetuals")
+
+            # ── Step 2: Filter 1 — Liquidity Gate ───────────────────────────
+            f1 = tickers_df[tickers_df["turnover24h"] >= MIN_TURNOVER_USD].copy()
+            logger.info(
+                f"[SCANNER] After Filter 1 (turnover ≥ $20M): {len(f1)} assets "
+                f"(eliminated {len(tickers_df) - len(f1)})"
+            )
+
+            # ── Step 3: Compute today's open and change_from_open ────────────
+            # Check DB first, then API
+            symbols_f1 = [s for s in f1["symbol"].tolist()
+                         if s not in BASELINE_SYMBOLS]
+
+            open_prices = await self._fetch_daily_opens_with_cache(fetcher, symbols_f1)
+
+            # Compute change from open
+            f1["open_today"] = f1["symbol"].map(open_prices)
+            # Drop symbols where we couldn't get open price
+            f1 = f1.dropna(subset=["open_today"])
+            f1["change_from_open_pct"] = (
+                (f1["lastPrice"] - f1["open_today"]) / f1["open_today"] * 100
+            )
+
+            # ── Step 4: Filter 3 — Momentum Trigger ─────────────────────────
+            # (Run before ATR to reduce ATR fetch calls)
+            f3 = f1[f1["change_from_open_pct"].abs() >= MIN_MOMENTUM_PCT].copy()
+            f3["direction"] = f3["change_from_open_pct"].apply(
+                lambda x: "long" if x >= MIN_MOMENTUM_PCT else "short"
+            )
+            logger.info(
+                f"[SCANNER] After Filter 3 (momentum ≥ 5%): {len(f3)} assets "
+                f"(eliminated {len(f1) - len(f3)})"
+            )
+
+            # ── Step 5: Filter 4 — Volume Gate ──────────────────────────────
+            f4 = f3[
+                (f3["volume24h"] >= MIN_VOLUME_USD) &
+                (f3["volume24h"] <= MAX_VOLUME_USD)
+            ].copy()
+            logger.info(
+                f"[SCANNER] After Filter 4 (volume $5M-$1B): {len(f4)} assets "
+                f"(eliminated {len(f3) - len(f4)})"
+            )
+
+            # ── Step 6: Filter 2 — ATR Gate (check DB first, then API) ──────
+            symbols_for_atr = f4["symbol"].tolist()
+            atr_values = await self._compute_atr_batch_with_cache(fetcher, symbols_for_atr)
+
+            f4["atr_14_pct"] = f4["symbol"].map(atr_values)
+            f4 = f4.dropna(subset=["atr_14_pct"])
+
+            fallback_activated = False
+            atr_threshold = MIN_ATR_PCT
+
+            filtered = f4[f4["atr_14_pct"] > atr_threshold].copy()
+
+            # ── Step 7: Fallback if watchlist too small ──────────────────────
+            if len(filtered) < MINIMUM_WATCHLIST_SIZE:
+                logger.warning(
+                    f"[SCANNER] Watchlist size {len(filtered)} < {MINIMUM_WATCHLIST_SIZE}. "
+                    f"Activating fallback thresholds (ATR>3%, Momentum>3%)"
+                )
+                fallback_activated = True
+
+                # Re-apply with looser thresholds
+                f3_fallback = f1[
+                    f1["change_from_open_pct"].abs() >= MIN_MOMENTUM_PCT_FALLBACK
+                ].copy()
+                f3_fallback["direction"] = f3_fallback["change_from_open_pct"].apply(
+                    lambda x: "long" if x >= MIN_MOMENTUM_PCT_FALLBACK else "short"
+                )
+                f4_fallback = f3_fallback[
+                    (f3_fallback["volume24h"] >= MIN_VOLUME_USD) &
+                    (f3_fallback["volume24h"] <= MAX_VOLUME_USD)
+                ].copy()
+
+                fb_symbols = f4_fallback["symbol"].tolist()
+                fb_atr = await self._compute_atr_batch_with_cache(fetcher, fb_symbols)
+                f4_fallback["atr_14_pct"] = f4_fallback["symbol"].map(fb_atr)
+                f4_fallback = f4_fallback.dropna(subset=["atr_14_pct"])
+                filtered = f4_fallback[
+                    f4_fallback["atr_14_pct"] > MIN_ATR_PCT_FALLBACK
+                ].copy()
+
+                logger.info(
+                    f"[SCANNER] Fallback result: {len(filtered)} assets"
+                )
+
+        # ── Step 8: Update tables ────────────────────────────────────────────
+        watchlist = self._build_watchlist(filtered, tickers_df, open_prices)
+        if refresh_type == 'hourly':
+            self._update_active_watchlist_1h(watchlist, now_utc)
+        else:
+            self._update_active_watchlist(watchlist, fallback_activated, now_utc)
+            self._insert_snapshot(watchlist, fallback_activated, now_utc, refresh_type)
+
+        # ── Step 9: Build and log summary ────────────────────────────────────
+        longs  = [w for w in watchlist if w["direction"] == "long"]
+        shorts = [w for w in watchlist if w["direction"] == "short"]
+        baseline = [w for w in watchlist if w["direction"] == "baseline"]
+
+        summary = {
+            "timestamp":          now_utc.isoformat(),
+            "refresh_type":       refresh_type,
+            "total_assets":       len(watchlist),
+            "baseline_count":     len(baseline),
+            "long_count":         len(longs),
+            "short_count":        len(shorts),
+            "fallback_activated": fallback_activated,
+            "sentiment_ratio":    round(len(longs) / len(shorts), 2) if shorts else None,
+            "sentiment_bias":     self._get_bias(len(longs), len(shorts)),
+            "long_symbols":       [w["symbol"] for w in longs],
+            "short_symbols":      [w["symbol"] for w in shorts],
+        }
+
+        self._log_summary(summary)
+        return summary
+
+    async def _fetch_daily_opens_with_cache(
+        self,
+        fetcher: BybitFuturesFetcher,
+        symbols: List[str]
+    ) -> Dict[str, float]:
+        """
+        Fetch today's daily open price for each symbol.
+        Checks database first, then falls back to API.
+        Returns dict: symbol -> open_price
+        """
+        open_prices = {}
+        conn = sqlite3.connect(self.db.db_path)
+        cursor = conn.cursor()
+
+        # Get today's date boundary (00:00 UTC)
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_str = today_start.strftime("%Y-%m-%d %H:%M:%S")
+
+        for symbol in symbols:
+            # Try database first
+            cursor.execute("""
+                SELECT open FROM ohlcv_data 
+                WHERE symbol = ? 
+                  AND timeframe = 'D' 
+                  AND source = 'bybit_futures'
+                  AND timestamp >= ?
+                ORDER BY timestamp ASC
+                LIMIT 1
+            """, (symbol, today_str))
+            row = cursor.fetchone()
+
+            if row:
+                open_prices[symbol] = float(row[0])
+                logger.debug(f"[SCANNER] Open for {symbol} from DB: {row[0]}")
+            else:
+                # Fall back to API
+                df = await fetcher.fetch_price(symbol, "D", limit=2)
+                if df is not None and len(df) > 0:
+                    # Get the most recent daily candle's open
+                    open_price = float(df.iloc[-1]["open"])
+                    open_prices[symbol] = open_price
+                    logger.debug(f"[SCANNER] Open for {symbol} from API: {open_price}")
+                else:
+                    logger.warning(f"[SCANNER] Could not fetch open for {symbol}")
+
+        conn.close()
+        return open_prices
+
+    async def _compute_atr_batch_with_cache(
+        self,
+        fetcher: BybitFuturesFetcher,
+        symbols: List[str]
+    ) -> Dict[str, float]:
+        """
+        Compute ATR(14) for a list of symbols.
+        Checks database first for daily candles, then fetches missing ones.
+        Returns dict: symbol -> atr_pct
+        """
+        atr_values = {}
+        conn = sqlite3.connect(self.db.db_path)
+        cursor = conn.cursor()
+
+        for symbol in symbols:
+            # Try to get daily candles from database first
+            cursor.execute("""
+                SELECT timestamp, open, high, low, close, volume
+                FROM ohlcv_data 
+                WHERE symbol = ? 
+                  AND timeframe = 'D' 
+                  AND source = 'bybit_futures'
+                ORDER BY timestamp DESC
+                LIMIT 20
+            """, (symbol,))
+            rows = cursor.fetchall()
+
+            if len(rows) >= ATR_PERIOD + 1:
+                # Build DataFrame from DB data
+                df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                # Ensure chronological order (oldest first)
+                df = df.iloc[::-1].reset_index(drop=True)
+                # Convert price columns to float
+                for col in ["open", "high", "low", "close"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                atr_pct = compute_atr_pct(df, ATR_PERIOD)
+                if atr_pct is not None:
+                    atr_values[symbol] = round(atr_pct, 4)
+                    logger.debug(f"[SCANNER] ATR for {symbol} from DB: {atr_pct}%")
+                    continue
+
+            # Fall back to API if insufficient DB data
+            df = await fetcher.fetch_price(symbol, "D", limit=20)
+            if df is not None and len(df) >= ATR_PERIOD + 1:
+                atr_pct = compute_atr_pct(df, ATR_PERIOD)
+                if atr_pct is not None:
+                    atr_values[symbol] = round(atr_pct, 4)
+                    logger.debug(f"[SCANNER] ATR for {symbol} from API: {atr_pct}%")
+                    # Store in DB for future cache hits
+                    fetcher._save_to_db(df, symbol, "D")
+            else:
+                logger.warning(f"[SCANNER] Could not compute ATR for {symbol}")
+
+        conn.close()
+        return atr_values
+
+    def _build_watchlist(
+        self,
+        filtered: pd.DataFrame,
+        tickers_df: pd.DataFrame,
+        open_prices: Dict[str, float]
+    ) -> List[Dict]:
+        """
+        Build final watchlist combining baseline + filtered assets.
+        """
+        watchlist = []
+
+        # Add baseline first
+        ticker_map = tickers_df.set_index("symbol").to_dict("index")
+
+        for symbol in BASELINE_SYMBOLS:
+            t = ticker_map.get(symbol, {})
+            open_p = open_prices.get(symbol, float(t.get("lastPrice", 0) or 0))
+            last_p = float(t.get("lastPrice", 0) or 0)
+            change = ((last_p - open_p) / open_p * 100) if open_p > 0 else 0.0
+
+            watchlist.append({
+                "symbol":               symbol,
+                "direction":            "baseline",
+                "change_from_open_pct": round(change, 4),
+                "volume_24h":           float(t.get("volume24h", 0) or 0),
+                "turnover_24h":         float(t.get("turnover24h", 0) or 0),
+                "atr_14_pct":           None,
+            })
+
+        # Add filtered assets (exclude any that are already in baseline)
+        for _, row in filtered.iterrows():
+            if row["symbol"] in BASELINE_SYMBOLS:
+                continue
+            watchlist.append({
+                "symbol":               row["symbol"],
+                "direction":            row.get("direction", "long"),
+                "change_from_open_pct": round(float(row.get("change_from_open_pct", 0)), 4),
+                "volume_24h":           round(float(row.get("volume24h", 0)), 2),
+                "turnover_24h":         round(float(row.get("turnover24h", 0)), 2),
+                "atr_14_pct":           round(float(row.get("atr_14_pct", 0)), 4),
+            })
+
+        return watchlist
+
+    def _update_active_watchlist(
+        self,
+        watchlist: List[Dict],
+        fallback_activated: bool,
+        now_utc: datetime
+    ):
+        """
+        Replace active_watchlist table with current scan results.
+        expires_at = now + 96h (rolling TTL; revalidated on each scan)
+        """
+        try:
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+
+            expires_dt = now_utc + timedelta(hours=REFRESH_HOURS)
+            expires_str = expires_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Clear expired entries
+            cursor.execute(
+                "DELETE FROM active_watchlist WHERE expires_at < datetime('now')"
+            )
+
+            # Revalidate existing / insert new symbols
+            for asset in watchlist:
+                sym = asset["symbol"]
+                cursor.execute(
+                    "SELECT symbol FROM active_watchlist WHERE symbol = ?",
+                    (sym,)
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Extend TTL; preserve original added_at
+                    cursor.execute("""
+                        UPDATE active_watchlist
+                        SET direction = ?, change_from_open_pct = ?,
+                            volume_24h = ?, turnover_24h = ?,
+                            atr_14_pct = ?, expires_at = ?,
+                            refresh_count = refresh_count + 1
+                        WHERE symbol = ?
+                    """, (
+                        asset["direction"],
+                        asset["change_from_open_pct"],
+                        asset["volume_24h"],
+                        asset["turnover_24h"],
+                        asset["atr_14_pct"],
+                        expires_str,
+                        sym,
+                    ))
+                    logger.info(
+                        f"[WATCHLIST_REVALIDATE] {sym} — TTL extended to 96h "
+                        f"(expires {expires_str} UTC)"
+                    )
+                else:
+                    # New symbol — insert with 96h TTL
+                    cursor.execute("""
+                        INSERT INTO active_watchlist
+                        (symbol, direction, change_from_open_pct, volume_24h,
+                         turnover_24h, atr_14_pct, added_at, expires_at, refresh_count)
+                        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, 0)
+                    """, (
+                        sym,
+                        asset["direction"],
+                        asset["change_from_open_pct"],
+                        asset["volume_24h"],
+                        asset["turnover_24h"],
+                        asset["atr_14_pct"],
+                        expires_str,
+                    ))
+                    logger.info(
+                        f"[WATCHLIST_ADD] {sym} — added with 96h TTL "
+                        f"(expires {expires_str} UTC)"
+                    )
+
+            conn.commit()
+            logger.info(
+                f"[SCANNER] active_watchlist updated: {len(watchlist)} assets, "
+                f"expires {expires_str} UTC"
+            )
+
+        except Exception as e:
+            logger.error(f"[SCANNER] active_watchlist update error: {e}")
+
+    def _update_active_watchlist_1h(self, watchlist: List[Dict], now_utc: datetime):
+        """Hourly scan: INSERT new symbols only (24h TTL). Preserves existing 96h TTL."""
+        try:
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+
+            expires_dt = now_utc + timedelta(hours=24)
+            expires_str = expires_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            added = 0
+            skipped = 0
+            for asset in watchlist:
+                sym = asset["symbol"]
+                cursor.execute(
+                    "SELECT symbol FROM active_watchlist WHERE symbol = ?",
+                    (sym,)
+                )
+                if cursor.fetchone():
+                    skipped += 1
+                    continue
+
+                cursor.execute("""
+                    INSERT INTO active_watchlist
+                    (symbol, direction, change_from_open_pct, volume_24h,
+                     turnover_24h, atr_14_pct, added_at, expires_at, refresh_count)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?, 0)
+                """, (
+                    sym,
+                    asset["direction"],
+                    asset["change_from_open_pct"],
+                    asset["volume_24h"],
+                    asset["turnover_24h"],
+                    asset["atr_14_pct"],
+                    expires_str,
+                ))
+                logger.info(
+                    f"[WATCHLIST_1H_ADD] {sym} — added with 24h TTL "
+                    f"(expires {expires_str} UTC)"
+                )
+                added += 1
+
+            conn.commit()
+            logger.info(
+                f"[SCANNER_1H] Hourly scan complete: {added} added, "
+                f"{skipped} skipped (preserved 96h TTL)"
+            )
+
+        except Exception as e:
+            logger.error(f"[SCANNER] active_watchlist_1h update error: {e}")
+
+    def _insert_snapshot(
+        self,
+        watchlist: List[Dict],
+        fallback_activated: bool,
+        now_utc: datetime,
+        refresh_type: str
+    ):
+        """Insert current watchlist into snapshot history table."""
+        try:
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+
+            snap_date = now_utc.strftime("%Y-%m-%d")
+            snap_time = now_utc.strftime("%H:%M:%S")
+
+            for asset in watchlist:
+                cursor.execute("""
+                    INSERT INTO daily_watchlist_snapshot
+                    (snapshot_date, snapshot_time, refresh_type, symbol,
+                     direction, change_from_open_pct, volume_24h,
+                     turnover_24h, atr_14_pct, fallback_activated)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    snap_date,
+                    snap_time,
+                    refresh_type,
+                    asset["symbol"],
+                    asset["direction"],
+                    asset["change_from_open_pct"],
+                    asset["volume_24h"],
+                    asset["turnover_24h"],
+                    asset["atr_14_pct"],
+                    1 if fallback_activated else 0,
+                ))
+
+            conn.commit()
+            logger.info(
+                f"[SCANNER] Snapshot saved: {len(watchlist)} assets "
+                f"({refresh_type})"
+            )
+
+        except Exception as e:
+            logger.error(f"[SCANNER] Snapshot insert error: {e}")
+
+    def _get_bias(self, long_count: int, short_count: int) -> str:
+        if long_count == 0 and short_count == 0:
+            return "NEUTRAL"
+        if short_count == 0:
+            return "STRONGLY BULLISH"
+        ratio = long_count / short_count
+        if ratio >= 2.0:
+            return "STRONGLY BULLISH"
+        elif ratio >= 1.2:
+            return "BULLISH"
+        elif ratio <= 0.5:
+            return "STRONGLY BEARISH"
+        elif ratio <= 0.8:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    def _log_summary(self, summary: Dict):
+        """Log scan summary in readable format."""
+        logger.info("=" * 60)
+        logger.info(f"[SCANNER] SCAN COMPLETE — {summary['refresh_type'].upper()}")
+        logger.info(f"  Timestamp:  {summary['timestamp']}")
+        logger.info(f"  Total:      {summary['total_assets']} assets")
+        logger.info(f"  Baseline:   {summary['baseline_count']}")
+        logger.info(f"  Longs:      {summary['long_count']} {summary['long_symbols']}")
+        logger.info(f"  Shorts:     {summary['short_count']} {summary['short_symbols']}")
+        logger.info(f"  Sentiment:  {summary['sentiment_bias']}")
+        if summary["fallback_activated"]:
+            logger.warning("[SCANNER] ⚠️ Fallback thresholds activated")
+        logger.info("=" * 60)
+
+    def get_active_symbols(self) -> List[Dict]:
+        """
+        Query current active watchlist for signal engine consumption.
+        Returns list of {symbol, direction} dicts.
+        """
+        try:
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT symbol, direction
+                FROM active_watchlist
+                WHERE expires_at > datetime('now')
+                ORDER BY direction, symbol
+            """)
+            rows = cursor.fetchall()
+            return [{"symbol": r[0], "direction": r[1]} for r in rows]
+        except Exception as e:
+            logger.error(f"[SCANNER] get_active_symbols error: {e}")
+            return [{"symbol": s, "direction": "baseline"} for s in BASELINE_SYMBOLS]

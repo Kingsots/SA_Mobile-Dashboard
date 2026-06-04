@@ -1,0 +1,67 @@
+================================================================================
+EVENT-DRIVEN SIGNALS ANALYSIS REPORT
+Generated: 2026-02-17T11:02:18.669396+00:00
+Analysis Period: 2026-01-20T00:00:00 to now (20 trading days)
+================================================================================
+
+OVERALL SUMMARY
+--------------------------------------------------------------------------------
+Total Event-Driven Signals: 1051
+  BUY: 505 (48.0%)
+  SELL: 0 (0.0%)
+  NEUTRAL: 546 (52.0%)
+Unique Tickers: 12
+Unique Event Types: 7
+
+EVENT TYPE DISTRIBUTION
+--------------------------------------------------------------------------------
+  event:volatility_expansion: 513 (48.8%)
+  event:rsi_rejection_bearish: 238 (22.6%)
+  event:rsi_rebound_bullish: 159 (15.1%)
+  event:trendline_break_resistance: 80 (7.6%)
+  event:trendline_break_support: 48 (4.6%)
+  event:engulfed_structure_bullish: 9 (0.9%)
+  event:engulfed_structure_bearish: 4 (0.4%)
+
+TOP 15 TICKERS BY TOTAL SIGNALS
+--------------------------------------------------------------------------------
+Ticker          Buy   Sell  Neutral  Total    %Buy   Avg Conf
+--------------------------------------------------------------------------------
+EURGBP          138      0        0    138  100.0%     0.6511
+USDJPY            0      0      112    112    0.0%     0.6510
+AUDJPY           75      0       29    104   72.1%     0.6519
+CADJPY           38      0       63    101   37.6%     0.6365
+EURJPY            3      0       95     98    3.1%     0.6417
+GBPJPY            4      0       90     94    4.3%     0.6492
+GBPUSD           44      0       34     78   56.4%     0.6188
+AUDCAD           52      0       26     78   66.7%     0.6235
+AUDUSD           75      0        2     77   97.4%     0.6263
+USDCAD           48      0       25     73   65.8%     0.6268
+EURUSD           27      0       26     53   50.9%     0.6021
+XAUUSD            1      0       44     45    2.2%     0.6870
+
+RECENT 20 SIGNALS
+--------------------------------------------------------------------------------
+Timestamp                      Ticker     Signal       Conf Event Type                         
+--------------------------------------------------------------------------------
+2026-02-17T09:30:00+00:00      EURGBP     BUY        0.7572 event:volatility_expansion         
+2026-02-17T08:30:00+00:00      GBPUSD     BUY        0.5798 event:volatility_expansion         
+2026-02-17T08:30:00+00:00      EURGBP     BUY        0.9000 event:volatility_expansion         
+2026-02-17T08:30:00+00:00      GBPUSD     BUY        0.6324 event:volatility_expansion         
+2026-02-17T08:00:00+00:00      EURUSD     NEUTRAL    0.5863 event:rsi_rebound_bullish          
+2026-02-17T08:00:00+00:00      EURUSD     NEUTRAL    0.5392 event:rsi_rebound_bullish          
+2026-02-17T07:00:00+00:00      EURJPY     NEUTRAL    0.6708 event:rsi_rebound_bullish          
+2026-02-17T07:00:00+00:00      GBPJPY     NEUTRAL    0.9500 event:trendline_break_support      
+2026-02-17T07:00:00+00:00      USDJPY     NEUTRAL    0.6368 event:rsi_rebound_bullish          
+2026-02-17T06:00:00+00:00      EURGBP     BUY        0.9500 event:trendline_break_resistance   
+2026-02-17T06:00:00+00:00      GBPUSD     BUY        0.9500 event:trendline_break_support      
+2026-02-17T06:00:00+00:00      AUDUSD     BUY        0.5108 event:volatility_expansion         
+2026-02-17T06:00:00+00:00      EURGBP     BUY        0.6246 event:rsi_rejection_bearish        
+2026-02-17T06:00:00+00:00      EURUSD     NEUTRAL    0.5433 event:rsi_rebound_bullish          
+2026-02-17T06:00:00+00:00      GBPUSD     BUY        0.9000 event:rsi_rebound_bullish          
+2026-02-17T05:30:00+00:00      XAUUSD     BUY        0.9500 event:trendline_break_support      
+2026-02-17T05:00:00+00:00      AUDCAD     NEUTRAL    0.5257 event:volatility_expansion         
+2026-02-17T05:00:00+00:00      EURJPY     BUY        0.5281 event:volatility_expansion         
+2026-02-17T05:00:00+00:00      CADJPY     NEUTRAL    0.5159 event:volatility_expansion         
+2026-02-17T05:00:00+00:00      GBPJPY     BUY        0.5323 event:volatility_expansion         
+

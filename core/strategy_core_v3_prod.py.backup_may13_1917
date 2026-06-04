@@ -1,0 +1,1085 @@
+"""
+Silent Analyst — Strategy Core V3 (PRODUCTION)
+================================================
+Structure Momentum Engine: BOS + Hidden Divergence + ADX Expansion
+
+FIXES APPLIED (April 2026):
+    1. Compression baseline fixed (stationary 20-bar window)
+    2. ADX slope calibrated per timeframe
+    3. Hidden divergence documented as rare-event filter
+    4. Pivot detection confirmed correct (rolling max, no lookahead)
+    5. Session filter improved
+    6. 2H timeframe explicitly added
+
+Supported Timeframes:
+    - 30m:  adx_min_slope=0.15, min_score=5 (rare signals)
+    - 1H:   adx_min_slope=0.3,  min_score=6 (standard)
+    - 2H:   adx_min_slope=0.4,  min_score=6 (intraday/swing)
+    - 4H:   adx_min_slope=0.5,  min_score=6 (PRIMARY)
+
+Architecture:
+    - Stateful per (ticker, interval) pair via SilentStructureEngine
+    - Two-stage entry: Structural Break + Momentum Confirmation
+    - ATR compression → expansion gate
+    - Hidden RSI divergence filter
+    - ADX slope confirmation
+    - Session-aware (UTC 07:00-20:00)
+    - Fail-closed HTF bias (1H EMA100)
+    - Full SL/TP calculation on every signal
+
+Author: Silent Analyst Strategy Core V3 — Production Edition
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import numpy as np
+import pandas as pd
+from dataclasses import dataclass, field, asdict
+from enum import IntEnum
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL ENUM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Signal(IntEnum):
+    SELL    = -1
+    NEUTRAL =  0
+    BUY     =  1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL RESULT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class SignalResult:
+    signal:                   int   = 0
+    sl:                       float = math.nan
+    tp:                       float = math.nan
+    rr:                       float = math.nan
+    atr:                      float = math.nan
+    entry_price:              float = math.nan
+    stage:                    str   = "SCANNING"
+    score:                    int   = 0
+    reason:                   str   = ""
+    position_size_multiplier: float = 1.0
+    confirmation_tags:        list  = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        return {1: "BUY", -1: "SELL", 0: "NEUTRAL"}[self.signal]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIMEFRAME CONFIG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class V3Config:
+    """
+    All strategy parameters in one place.
+    Calibrated per timeframe.
+
+    CALIBRATION NOTES (April 2026):
+        - 30m:  Fast momentum, tighter pivots, ADX slope 0.15
+        - 1H:   Balanced, standard settings, ADX slope 0.3
+        - 2H:   Intraday swing, ADX slope 0.4, higher R:R
+        - 4H:   Swing PRIMARY, ADX slope 0.5, highest R:R
+    """
+    # ── Pivot structure
+    pivot_lookback:       int   = 5
+    min_pivot_spacing:    int   = 3
+    bos_atr_buffer:       float = 0.2
+
+    # ── ATR
+    atr_period:           int   = 14
+
+    # ── Compression / Expansion
+    compression_ratio:    float = 0.85
+    compression_lookback: int   = 5
+    expansion_confirm:    bool  = True
+
+    # ── ADX
+    adx_period:           int   = 14
+    adx_min_level:        float = 22.0
+    adx_min_slope:        float = 0.3      # Calibrated per timeframe
+
+    # ── Divergence
+    div_lookback:         int   = 3
+    div_min_pivot_gap:    int   = 3
+
+    # ── RSI
+    rsi_period:           int   = 14
+
+    # ── Entry candle
+    body_ratio_min:       float = 0.55
+
+    # ── HTF bias
+    htf_ema_period:       int   = 100
+    htf_resample:         str   = "h"  # lowercase for pandas resample
+
+    # ── Session filter (UTC hours, inclusive)
+    session_start_utc:    int   = 7
+    session_end_utc:      int   = 20
+    session_filter_enabled: bool = False  # disabled for 24/7 crypto
+
+    # ── Risk
+    sl_atr_multiplier:    float = 1.2
+    rr_ratio:             float = 2.5
+
+    # ── Signal quality gate
+    min_score:            int   = 6
+
+    # ── Cooldown
+    min_bars_between_signals: int = 4
+    in_position_reset_bars:   int = 8
+
+    label: str = "1H Standard"
+
+
+def get_v3_config(interval: str) -> V3Config:
+    """
+    Auto-calibrated config per timeframe.
+    Supports: 30m, 1h, 2h, 4h
+    """
+    iv = interval.lower().strip()
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 30m — Fast Intraday (Rare signals, high quality)
+    # ═══════════════════════════════════════════════════════════════════
+    if iv in ("30m", "30", "30min"):
+        return V3Config(
+            pivot_lookback       = 4,
+            min_pivot_spacing    = 2,
+            bos_atr_buffer       = 0.15,
+            compression_lookback = 4,
+            adx_min_level        = 20.0,
+            adx_min_slope        = 0.15,
+            div_lookback         = 4,
+            body_ratio_min       = 0.55,
+            sl_atr_multiplier    = 1.0,
+            rr_ratio             = 2.0,
+            min_score            = 5,
+            min_bars_between_signals = 3,
+            label                = "30m Intraday (Rare)",
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 1H — Standard Intraday
+    # ═══════════════════════════════════════════════════════════════════
+    if iv in ("1h", "60m", "60", "1hour"):
+        return V3Config(
+            pivot_lookback       = 5,
+            min_pivot_spacing    = 3,
+            bos_atr_buffer       = 0.20,
+            compression_lookback = 5,
+            adx_min_level        = 22.0,
+            adx_min_slope        = 0.30,
+            div_lookback         = 3,
+            body_ratio_min       = 0.55,
+            sl_atr_multiplier    = 1.2,
+            rr_ratio             = 2.5,
+            min_score            = 6,
+            min_bars_between_signals = 4,
+            label                = "1H Standard",
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 2H — Intraday/Swing Hybrid
+    # ═══════════════════════════════════════════════════════════════════
+    if iv in ("2h", "120m", "120", "2hour"):
+        return V3Config(
+            pivot_lookback       = 5,
+            min_pivot_spacing    = 3,
+            bos_atr_buffer       = 0.22,
+            compression_lookback = 5,
+            adx_min_level        = 22.0,
+            adx_min_slope        = 0.40,
+            div_lookback         = 3,
+            body_ratio_min       = 0.58,
+            sl_atr_multiplier    = 1.3,
+            rr_ratio             = 2.5,
+            min_score            = 6,
+            min_bars_between_signals = 5,
+            label                = "2H Intraday/Swing",
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 4H — Swing PRIMARY (Highest quality)
+    # ═══════════════════════════════════════════════════════════════════
+    if iv in ("4h", "240m", "240", "4hour"):
+        return V3Config(
+            pivot_lookback       = 6,
+            min_pivot_spacing    = 4,
+            bos_atr_buffer       = 0.25,
+            compression_lookback = 6,
+            adx_min_level        = 25.0,
+            adx_min_slope        = 0.50,
+            div_lookback         = 2,
+            div_min_pivot_gap    = 5,
+            body_ratio_min       = 0.60,
+            sl_atr_multiplier    = 1.5,
+            rr_ratio             = 3.0,
+            min_score            = 6,
+            min_bars_between_signals = 6,
+            label                = "4H Swing (PRIMARY)",
+        )
+
+    # Default fallback: treat as 1H
+    return V3Config(label="unknown — defaulting to 1H")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRUCTURE STATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class StructureState:
+    last_swing_high:     float = math.nan
+    last_swing_low:      float = math.nan
+    prev_swing_high:     float = math.nan
+    prev_swing_low:      float = math.nan
+    last_swing_high_rsi: float = math.nan
+    last_swing_low_rsi:  float = math.nan
+    prev_swing_high_rsi: float = math.nan
+    prev_swing_low_rsi:  float = math.nan
+    last_pivot_bar:      int   = -999
+
+    bos_level:           float = math.nan
+    trend_bias:          str   = "neutral"
+
+    last_signal_bar:     int   = -999
+    in_position:         bool  = False
+    position_bar:        int   = -999
+
+    def reset_bull(self):
+        self.bos_level   = math.nan
+        self.trend_bias  = "neutral"
+        self.in_position = False
+
+    def reset_bear(self):
+        self.bos_level   = math.nan
+        self.trend_bias  = "neutral"
+        self.in_position = False
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        for k, v in d.items():
+            if isinstance(v, float) and math.isnan(v):
+                d[k] = None
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "StructureState":
+        if not d:
+            return cls()
+        clean = {}
+        for k, v in d.items():
+            if v is None and k not in ("trend_bias",):
+                clean[k] = math.nan
+            else:
+                clean[k] = v
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in clean.items() if k in known})
+
+    @property
+    def has_swing_high(self) -> bool:
+        return not math.isnan(self.last_swing_high)
+
+    @property
+    def has_swing_low(self) -> bool:
+        return not math.isnan(self.last_swing_low)
+
+    @property
+    def has_divergence_data(self) -> bool:
+        return (
+            self.has_swing_high and not math.isnan(self.prev_swing_high) and
+            self.has_swing_low  and not math.isnan(self.prev_swing_low)
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INDICATOR FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta.clip(upper=0))
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    return (100.0 - (100.0 / (1.0 + rs))).fillna(50.0)
+
+
+def _ema(series: pd.Series, period: int) -> pd.Series:
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    return atr.ffill().fillna(0.0)
+
+
+def _adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    up = high.diff()
+    down = (-low.diff())
+
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+
+    alpha = 1.0 / period
+    atr_s = tr.ewm(alpha=alpha, adjust=False, min_periods=period).mean()
+    plus_dm_s = plus_dm.ewm(alpha=alpha, adjust=False, min_periods=period).mean()
+    minus_dm_s = minus_dm.ewm(alpha=alpha, adjust=False, min_periods=period).mean()
+
+    plus_di = 100.0 * (plus_dm_s / atr_s.replace(0.0, np.nan))
+    minus_di = 100.0 * (minus_dm_s / atr_s.replace(0.0, np.nan))
+
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0.0, np.nan)) * 100.0
+    adx = dx.ewm(alpha=alpha, adjust=False, min_periods=period).mean()
+
+    result = pd.DataFrame({
+        "adx": adx.ffill().fillna(0.0),
+        "plus_di": plus_di.ffill().fillna(0.0),
+        "minus_di": minus_di.ffill().fillna(0.0),
+    }, index=df.index)
+    return result
+
+
+def _pivot_highs(high: pd.Series, lookback: int) -> pd.Series:
+    """Left-aligned pivot highs — NO lookahead. Confirmed using rolling max."""
+    roll_max = high.rolling(lookback + 1, min_periods=lookback + 1).max()
+    is_pivot = high == roll_max
+    return high.where(is_pivot)
+
+
+def _pivot_lows(low: pd.Series, lookback: int) -> pd.Series:
+    """Left-aligned pivot lows — NO lookahead."""
+    roll_min = low.rolling(lookback + 1, min_periods=lookback + 1).min()
+    is_pivot = low == roll_min
+    return low.where(is_pivot)
+
+
+def _get_htf_bias(
+    df: pd.DataFrame,
+    resample_tf: str = "1H",
+    ema_period: int = 100,
+    interval: str = None,
+) -> tuple[bool, bool]:
+    """Higher timeframe bias via resampling — FAIL CLOSED."""
+    try:
+        idx = df.index
+        if idx.tz is None:
+            df = df.copy()
+            df.index = idx.tz_localize("UTC")
+        elif str(idx.tz) != "UTC":
+            df = df.copy()
+            df.index = idx.tz_convert("UTC")
+
+        # For 4H interval, use native 4H data for HTF bias (don't downsample)
+        if interval == '4h':
+            df_htf = df.copy()
+        else:
+            df_htf = df.resample(resample_tf, label="right", closed="right").agg({
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+            }).dropna()
+
+        now_utc = pd.Timestamp.utcnow()
+        df_htf = df_htf[df_htf.index <= now_utc]
+        if len(df_htf) > 0:
+            df_htf = df_htf.iloc[:-1]
+
+        if len(df_htf) < ema_period:
+            return False, False
+
+        ema_series = _ema(df_htf["close"], ema_period)
+        latest_close = df_htf["close"].iloc[-1]
+        latest_ema = ema_series.iloc[-1]
+
+        if pd.isna(latest_ema) or pd.isna(latest_close):
+            return False, False
+
+        return (latest_close > latest_ema), (latest_close < latest_ema)
+
+    except Exception as e:
+        logger.warning(f"[V3_HTF] Error: {e}")
+        return False, False
+
+
+def _get_daily_bias(df: pd.DataFrame, ema_period: int = 100) -> tuple[bool, bool]:
+    """Daily EMA100 bias — FAIL CLOSED."""
+    try:
+        idx = df.index
+        if idx.tz is None:
+            df = df.copy()
+            df.index = idx.tz_localize("UTC")
+        elif str(idx.tz) != "UTC":
+            df = df.copy()
+            df.index = idx.tz_convert("UTC")
+
+        df_daily = df.resample("D").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+        }).dropna()
+
+        today_utc = pd.Timestamp.utcnow().normalize()
+        df_daily = df_daily[df_daily.index < today_utc]
+
+        if len(df_daily) < ema_period:
+            return False, False
+
+        ema_series = _ema(df_daily["close"], ema_period)
+        latest_close = df_daily["close"].iloc[-1]
+        latest_ema = ema_series.iloc[-1]
+
+        if pd.isna(latest_ema) or pd.isna(latest_close):
+            return False, False
+
+        return (latest_close > latest_ema), (latest_close < latest_ema)
+
+    except Exception as e:
+        logger.warning(f"[V3_DAILY] Error: {e}")
+        return False, False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFLUENCE SCORING ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ConfluenceResult:
+    bos_bull:             bool = False
+    bos_bear:             bool = False
+    htf_bias_bull:        bool = False
+    htf_bias_bear:        bool = False
+    daily_bias_bull:      bool = False
+    daily_bias_bear:      bool = False
+    compression:          bool = False
+    atr_expansion:        bool = False
+    hidden_bull_div:      bool = False
+    hidden_bear_div:      bool = False
+    adx_ok:               bool = False
+    body_bull:            bool = False
+    body_bear:            bool = False
+    in_session:           bool = False
+
+    def bull_score(self) -> int:
+        return sum([
+            self.bos_bull,
+            self.htf_bias_bull,
+            self.daily_bias_bull,
+            self.compression,
+            self.atr_expansion,
+            self.hidden_bull_div,
+            self.adx_ok,
+            self.body_bull,
+        ])
+
+    def bear_score(self) -> int:
+        return sum([
+            self.bos_bear,
+            self.htf_bias_bear,
+            self.daily_bias_bear,
+            self.compression,
+            self.atr_expansion,
+            self.hidden_bear_div,
+            self.adx_ok,
+            self.body_bear,
+        ])
+
+    def bull_tags(self) -> list[str]:
+        tags = []
+        if self.bos_bull:          tags.append("BOS_BULL")
+        if self.htf_bias_bull:     tags.append("HTF_BULL")
+        if self.daily_bias_bull:   tags.append("DAILY_BULL")
+        if self.compression:       tags.append("COMPRESSION")
+        if self.atr_expansion:     tags.append("EXPANSION")
+        if self.hidden_bull_div:   tags.append("HIDDEN_BULL_DIV")
+        if self.adx_ok:            tags.append("ADX_OK")
+        if self.body_bull:         tags.append("BODY_BULL")
+        return tags
+
+    def bear_tags(self) -> list[str]:
+        tags = []
+        if self.bos_bear:          tags.append("BOS_BEAR")
+        if self.htf_bias_bear:     tags.append("HTF_BEAR")
+        if self.daily_bias_bear:   tags.append("DAILY_BEAR")
+        if self.compression:       tags.append("COMPRESSION")
+        if self.atr_expansion:     tags.append("EXPANSION")
+        if self.hidden_bear_div:   tags.append("HIDDEN_BEAR_DIV")
+        if self.adx_ok:            tags.append("ADX_OK")
+        if self.body_bear:         tags.append("BODY_BEAR")
+        return tags
+
+
+def _evaluate_confluence(
+    df: pd.DataFrame,
+    bar_idx: int,
+    state: StructureState,
+    adx_df: pd.DataFrame,
+    cfg: V3Config,
+    htf_bull: bool,
+    htf_bear: bool,
+    daily_bull: bool,
+    daily_bear: bool,
+) -> ConfluenceResult:
+    cr = ConfluenceResult()
+    row = df.iloc[bar_idx]
+    atr_now = row.get("atr", math.nan)
+
+    if math.isnan(atr_now) or atr_now == 0.0:
+        return cr
+
+    close = row["close"]
+    open_ = row["open"]
+    high = row["high"]
+    low = row["low"]
+
+    # BOS
+    if state.has_swing_high and not math.isnan(atr_now):
+        cr.bos_bull = close > (state.last_swing_high + cfg.bos_atr_buffer * atr_now)
+    if state.has_swing_low and not math.isnan(atr_now):
+        cr.bos_bear = close < (state.last_swing_low - cfg.bos_atr_buffer * atr_now)
+
+    # HTF / Daily bias
+    cr.htf_bias_bull = htf_bull
+    cr.htf_bias_bear = htf_bear
+    cr.daily_bias_bull = daily_bull
+    cr.daily_bias_bear = daily_bear
+
+    # ATR Compression — FIXED: stationary 20-bar baseline
+    if "atr" in df.columns and bar_idx >= 25:
+        recent_atr = df["atr"].iloc[bar_idx - cfg.compression_lookback: bar_idx].mean()
+        baseline_atr = df["atr"].iloc[bar_idx - 20: bar_idx].mean()
+        if baseline_atr > 0:
+            ratio = recent_atr / baseline_atr
+            cr.compression = ratio < cfg.compression_ratio
+
+    # ATR Expansion
+    if "atr" in df.columns and bar_idx > 0:
+        prev_atr = df["atr"].iloc[bar_idx - 1]
+        cr.atr_expansion = (atr_now > prev_atr) if not math.isnan(prev_atr) else False
+
+    # Hidden Divergence
+    if state.has_divergence_data and "rsi" in df.columns:
+        if (not math.isnan(state.last_swing_low_rsi) and not math.isnan(state.prev_swing_low_rsi)):
+            price_higher_low = state.last_swing_low > state.prev_swing_low
+            rsi_lower_low = state.last_swing_low_rsi < state.prev_swing_low_rsi
+            cr.hidden_bull_div = price_higher_low and rsi_lower_low
+        if (not math.isnan(state.last_swing_high_rsi) and not math.isnan(state.prev_swing_high_rsi)):
+            price_lower_high = state.last_swing_high < state.prev_swing_high
+            rsi_higher_high = state.last_swing_high_rsi > state.prev_swing_high_rsi
+            cr.hidden_bear_div = price_lower_high and rsi_higher_high
+
+    # ADX Momentum
+    if len(adx_df) > bar_idx and bar_idx > 0:
+        adx_now = adx_df["adx"].iloc[bar_idx]
+        adx_prev = adx_df["adx"].iloc[bar_idx - 1]
+        adx_slope = adx_now - adx_prev
+        cr.adx_ok = (adx_now > cfg.adx_min_level) and (adx_slope > cfg.adx_min_slope)
+
+    # Entry Candle Body
+    body = abs(close - open_)
+    range_ = high - low
+    if range_ > 0:
+        body_ratio = body / range_
+        ema_val = df["ema100"].iloc[bar_idx] if "ema100" in df.columns else math.nan
+        if not math.isnan(ema_val):
+            cr.body_bull = (close > open_) and (close > ema_val) and (body_ratio >= cfg.body_ratio_min)
+            cr.body_bear = (close < open_) and (close < ema_val) and (body_ratio >= cfg.body_ratio_min)
+        else:
+            cr.body_bull = (close > open_) and (body_ratio >= cfg.body_ratio_min)
+            cr.body_bear = (close < open_) and (body_ratio >= cfg.body_ratio_min)
+
+    # Session filter
+    if df.index.tz is None:
+        bar_hour = df.index[bar_idx].hour
+    else:
+        bar_hour = df.index[bar_idx].tz_convert("UTC").hour
+    cr.in_session = cfg.session_start_utc <= bar_hour <= cfg.session_end_utc
+
+    return cr
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL ENGINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SilentStructureEngine:
+    MIN_BARS = 200
+
+    def __init__(
+        self,
+        ticker: str,
+        interval: str,
+        config: Optional[V3Config] = None,
+    ):
+        self.ticker = ticker
+        self.interval = interval
+        self.cfg = config or get_v3_config(interval)
+        self.state = StructureState()
+        self._last_result: Optional[SignalResult] = None
+
+    def evaluate(self, df_ohlcv: pd.DataFrame) -> SignalResult:
+        neutral = SignalResult(stage=self.stage, reason="Insufficient data")
+
+        if df_ohlcv is None or len(df_ohlcv) < self.MIN_BARS:
+            return neutral
+
+        required = {"open", "high", "low", "close"}
+        if not required.issubset(df_ohlcv.columns):
+            return neutral
+
+        df = df_ohlcv.copy()
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        elif str(df.index.tz) != "UTC":
+            df.index = df.index.tz_convert("UTC")
+
+        df["rsi"] = _rsi(df["close"], self.cfg.rsi_period)
+        df["ema100"] = _ema(df["close"], self.cfg.htf_ema_period)
+        df["atr"] = _atr(df, self.cfg.atr_period)
+        adx_df = _adx(df, self.cfg.adx_period)
+
+        ph_series = _pivot_highs(df["high"], self.cfg.pivot_lookback)
+        pl_series = _pivot_lows(df["low"], self.cfg.pivot_lookback)
+
+        htf_bull, htf_bear = _get_htf_bias(df, self.cfg.htf_resample, self.cfg.htf_ema_period, interval=self.interval)
+        daily_bull, daily_bear = _get_daily_bias(df, self.cfg.htf_ema_period)
+
+        bar_idx = len(df) - 1
+
+        result = self._process_bar(
+            df=df,
+            bar_idx=bar_idx,
+            ph_series=ph_series,
+            pl_series=pl_series,
+            adx_df=adx_df,
+            htf_bull=htf_bull,
+            htf_bear=htf_bear,
+            daily_bull=daily_bull,
+            daily_bear=daily_bear,
+        )
+
+        self._last_result = result
+        return result
+
+    def advance_state(
+        self,
+        df_ohlcv: pd.DataFrame,
+        persisted_state: Optional[dict] = None,
+        last_processed_bar_time: Optional[str] = None,
+    ) -> tuple[SignalResult, dict]:
+        neutral_state = persisted_state or {}
+        neutral = SignalResult(stage=self.stage, reason="Insufficient data")
+
+        if df_ohlcv is None or len(df_ohlcv) < self.MIN_BARS:
+            return neutral, neutral_state
+
+        if persisted_state:
+            self.state = StructureState.from_dict(persisted_state)
+
+        df = df_ohlcv.copy()
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        elif str(df.index.tz) != "UTC":
+            df.index = df.index.tz_convert("UTC")
+
+        df["rsi"] = _rsi(df["close"], self.cfg.rsi_period)
+        df["ema100"] = _ema(df["close"], self.cfg.htf_ema_period)
+        df["atr"] = _atr(df, self.cfg.atr_period)
+        adx_df = _adx(df, self.cfg.adx_period)
+
+        ph_series = _pivot_highs(df["high"], self.cfg.pivot_lookback)
+        pl_series = _pivot_lows(df["low"], self.cfg.pivot_lookback)
+
+        htf_bull, htf_bear = _get_htf_bias(df, self.cfg.htf_resample, self.cfg.htf_ema_period, interval=self.interval)
+        daily_bull, daily_bear = _get_daily_bias(df, self.cfg.htf_ema_period)
+
+        start_idx = 0
+        if last_processed_bar_time:
+            try:
+                last_ts = pd.Timestamp(last_processed_bar_time, tz="UTC")
+                mask = df.index > last_ts
+                start_idx = df.index.get_loc(df.index[mask][0]) if mask.any() else len(df)
+            except Exception as e:
+                logger.warning(f"[V3_ADVANCE] {self.ticker}-{self.interval}: {e}")
+
+        last_result = SignalResult(stage=self.stage, reason="No new bars")
+
+        for i in range(start_idx, len(df)):
+            result = self._process_bar(
+                df=df,
+                bar_idx=i,
+                ph_series=ph_series,
+                pl_series=pl_series,
+                adx_df=adx_df,
+                htf_bull=htf_bull,
+                htf_bear=htf_bear,
+                daily_bull=daily_bull,
+                daily_bear=daily_bear,
+            )
+            if result.signal != Signal.NEUTRAL:
+                last_result = result
+
+        updated_state = self.state.to_dict()
+        updated_state["last_processed_bar_time"] = df.index[-1].isoformat()
+
+        return last_result, updated_state
+
+    def restore_state(self, state_dict: dict):
+        self.state = StructureState.from_dict(state_dict)
+
+    def reset(self):
+        self.state = StructureState()
+        self._last_result = None
+
+    @property
+    def stage(self) -> str:
+        bias = self.state.trend_bias.upper()
+        if self.state.in_position:
+            return f"IN POSITION ({bias})"
+        if not math.isnan(self.state.bos_level):
+            return f"BOS ACTIVE ({bias}) — WATCHING ENTRY"
+        return "SCANNING"
+
+    @property
+    def last_result(self) -> Optional[SignalResult]:
+        return self._last_result
+
+    def _process_bar(
+        self,
+        df: pd.DataFrame,
+        bar_idx: int,
+        ph_series: pd.Series,
+        pl_series: pd.Series,
+        adx_df: pd.DataFrame,
+        htf_bull: bool,
+        htf_bear: bool,
+        daily_bull: bool,
+        daily_bear: bool,
+    ) -> SignalResult:
+        s = self.state
+        cfg = self.cfg
+        row = df.iloc[bar_idx]
+
+        atr_now = row.get("atr", math.nan)
+        rsi_now = df["rsi"].iloc[bar_idx] if "rsi" in df.columns else math.nan
+
+        # Auto-reset in_position
+        if s.in_position and (bar_idx - s.position_bar) > cfg.in_position_reset_bars:
+            s.in_position = False
+
+        # Update swing structure
+        self._update_structure(bar_idx, ph_series, pl_series, df, rsi_now)
+
+        # Evaluate confluence
+        cr = _evaluate_confluence(
+            df=df,
+            bar_idx=bar_idx,
+            state=s,
+            adx_df=adx_df,
+            cfg=cfg,
+            htf_bull=htf_bull,
+            htf_bear=htf_bear,
+            daily_bull=daily_bull,
+            daily_bear=daily_bear,
+        )
+
+        # Session filter
+        if self.cfg.session_filter_enabled and not cr.in_session:
+            return SignalResult(stage=self.stage, reason="Outside session")
+
+        # Cooldown
+        if s.in_position or (bar_idx - s.last_signal_bar) < cfg.min_bars_between_signals:
+            return SignalResult(stage=self.stage, reason="Cooldown active")
+
+        bull_score = cr.bull_score()
+        bear_score = cr.bear_score()
+
+        # LONG
+        if cr.bos_bull and cr.body_bull and bull_score >= cfg.min_score:
+            sl, tp, rr = self._compute_risk(df, bar_idx, atr_now, "bull")
+            if math.isnan(sl) or math.isnan(tp):
+                return SignalResult(stage=self.stage, reason="BUY: Invalid SL/TP")
+
+            pos_mult = 1.0 if bull_score >= cfg.min_score + 1 else 0.75
+            s.bos_level = row["high"]
+            s.trend_bias = "bull"
+            s.last_signal_bar = bar_idx
+            s.in_position = True
+            s.position_bar = bar_idx
+
+            return SignalResult(
+                signal=int(Signal.BUY),
+                sl=sl,
+                tp=tp,
+                rr=rr,
+                atr=atr_now,
+                entry_price=row["close"],
+                stage=self.stage,
+                score=bull_score,
+                reason=f"BUY: score={bull_score}/{cfg.min_score + 1} tags={cr.bull_tags()}",
+                position_size_multiplier=pos_mult,
+                confirmation_tags=cr.bull_tags(),
+            )
+
+        # SHORT
+        if cr.bos_bear and cr.body_bear and bear_score >= cfg.min_score:
+            sl, tp, rr = self._compute_risk(df, bar_idx, atr_now, "bear")
+            if math.isnan(sl) or math.isnan(tp):
+                return SignalResult(stage=self.stage, reason="SELL: Invalid SL/TP")
+
+            pos_mult = 1.0 if bear_score >= cfg.min_score + 1 else 0.75
+            s.bos_level = row["low"]
+            s.trend_bias = "bear"
+            s.last_signal_bar = bar_idx
+            s.in_position = True
+            s.position_bar = bar_idx
+
+            return SignalResult(
+                signal=int(Signal.SELL),
+                sl=sl,
+                tp=tp,
+                rr=rr,
+                atr=atr_now,
+                entry_price=row["close"],
+                stage=self.stage,
+                score=bear_score,
+                reason=f"SELL: score={bear_score}/{cfg.min_score + 1} tags={cr.bear_tags()}",
+                position_size_multiplier=pos_mult,
+                confirmation_tags=cr.bear_tags(),
+            )
+
+        return SignalResult(
+            stage=self.stage,
+            reason=f"No signal: bull_score={bull_score} bear_score={bear_score} (need {cfg.min_score})",
+            score=max(bull_score, bear_score),
+        )
+
+    def _update_structure(
+        self,
+        bar_idx: int,
+        ph_series: pd.Series,
+        pl_series: pd.Series,
+        df: pd.DataFrame,
+        rsi_now: float,
+    ):
+        s = self.state
+        cfg = self.cfg
+
+        ph_val = ph_series.iloc[bar_idx]
+        if not pd.isna(ph_val):
+            if (bar_idx - s.last_pivot_bar) >= cfg.min_pivot_spacing:
+                s.prev_swing_high = s.last_swing_high
+                s.prev_swing_high_rsi = s.last_swing_high_rsi
+                s.last_swing_high = ph_val
+                s.last_swing_high_rsi = rsi_now
+                s.last_pivot_bar = bar_idx
+
+        pl_val = pl_series.iloc[bar_idx]
+        if not pd.isna(pl_val):
+            if (bar_idx - s.last_pivot_bar) >= cfg.min_pivot_spacing:
+                s.prev_swing_low = s.last_swing_low
+                s.prev_swing_low_rsi = s.last_swing_low_rsi
+                s.last_swing_low = pl_val
+                s.last_swing_low_rsi = rsi_now
+                s.last_pivot_bar = bar_idx
+
+    def _compute_risk(
+        self,
+        df: pd.DataFrame,
+        bar_idx: int,
+        atr_now: float,
+        direction: str,
+    ) -> tuple[float, float, float]:
+        s = self.state
+        cfg = self.cfg
+        row = df.iloc[bar_idx]
+        close = row["close"]
+
+        try:
+            if direction == "bull":
+                anchor = s.last_swing_low if s.has_swing_low else (close - 2.0 * atr_now)
+                sl = anchor - (cfg.sl_atr_multiplier * atr_now)
+                risk = close - sl
+                if risk <= 0:
+                    return math.nan, math.nan, math.nan
+                tp = close + (risk * cfg.rr_ratio)
+                rr = cfg.rr_ratio
+            elif direction == "bear":
+                anchor = s.last_swing_high if s.has_swing_high else (close + 2.0 * atr_now)
+                sl = anchor + (cfg.sl_atr_multiplier * atr_now)
+                risk = sl - close
+                if risk <= 0:
+                    return math.nan, math.nan, math.nan
+                tp = close - (risk * cfg.rr_ratio)
+                rr = cfg.rr_ratio
+            else:
+                return math.nan, math.nan, math.nan
+
+            return round(sl, 6), round(tp, 6), round(rr, 2)
+
+        except Exception as e:
+            logger.warning(f"[V3_RISK] {self.ticker}-{self.interval}: {e}")
+            return math.nan, math.nan, math.nan
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTEST FUNCTION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def backtest(
+    df_ohlcv: pd.DataFrame,
+    ticker: str,
+    interval: str,
+    config: Optional[V3Config] = None,
+) -> pd.DataFrame:
+    cfg = config or get_v3_config(interval)
+    engine = SilentStructureEngine(ticker, interval, cfg)
+
+    df = df_ohlcv.copy()
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    elif str(df.index.tz) != "UTC":
+        df.index = df.index.tz_convert("UTC")
+
+    df["rsi"] = _rsi(df["close"], cfg.rsi_period)
+    df["ema100"] = _ema(df["close"], cfg.htf_ema_period)
+    df["atr"] = _atr(df, cfg.atr_period)
+    adx_df = _adx(df, cfg.adx_period)
+
+    ph_series = _pivot_highs(df["high"], cfg.pivot_lookback)
+    pl_series = _pivot_lows(df["low"], cfg.pivot_lookback)
+
+    htf_bull, htf_bear = _get_htf_bias(df, cfg.htf_resample, cfg.htf_ema_period, interval=interval)
+    daily_bull, daily_bear = _get_daily_bias(df, cfg.htf_ema_period)
+
+    results = []
+
+    for i in range(len(df)):
+        if i < engine.MIN_BARS:
+            results.append(_null_row(df.index[i]))
+            continue
+
+        result = engine._process_bar(
+            df=df,
+            bar_idx=i,
+            ph_series=ph_series,
+            pl_series=pl_series,
+            adx_df=adx_df,
+            htf_bull=htf_bull,
+            htf_bear=htf_bear,
+            daily_bull=daily_bull,
+            daily_bear=daily_bear,
+        )
+
+        cr = _evaluate_confluence(
+            df=df,
+            bar_idx=i,
+            state=engine.state,
+            adx_df=adx_df,
+            cfg=cfg,
+            htf_bull=htf_bull,
+            htf_bear=htf_bear,
+            daily_bull=daily_bull,
+            daily_bear=daily_bear,
+        )
+
+        results.append({
+            "timestamp": df.index[i],
+            "signal": result.signal,
+            "label": result.label,
+            "sl": result.sl,
+            "tp": result.tp,
+            "rr": result.rr,
+            "atr": result.atr,
+            "entry_price": result.entry_price,
+            "stage": result.stage,
+            "score": result.score,
+            "reason": result.reason,
+            "position_size_mult": result.position_size_multiplier,
+            "confirmation_tags": "|".join(result.confirmation_tags),
+            "rsi": round(df["rsi"].iloc[i], 4),
+            "ema100": round(df["ema100"].iloc[i], 6),
+            "adx": round(adx_df["adx"].iloc[i], 2),
+            "bull_score": cr.bull_score(),
+            "bear_score": cr.bear_score(),
+        })
+
+    return pd.DataFrame(results).set_index("timestamp") if results else pd.DataFrame()
+
+
+def _null_row(ts) -> dict:
+    return {
+        "timestamp": ts,
+        "signal": 0,
+        "label": "NEUTRAL",
+        "sl": math.nan,
+        "tp": math.nan,
+        "rr": math.nan,
+        "atr": math.nan,
+        "entry_price": math.nan,
+        "stage": "WARMING UP",
+        "score": 0,
+        "reason": "Warming up indicators",
+        "position_size_mult": 1.0,
+        "confirmation_tags": "",
+        "rsi": math.nan,
+        "ema100": math.nan,
+        "adx": math.nan,
+        "bull_score": 0,
+        "bear_score": 0,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONVENIENCE WRAPPER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def evaluate(
+    ticker: str,
+    interval: str,
+    df_ohlcv: pd.DataFrame,
+    min_rows: int = 200,
+    config: Optional[V3Config] = None,
+) -> SignalResult:
+    if df_ohlcv is None or len(df_ohlcv) < min_rows:
+        return SignalResult(reason="Insufficient data")
+    try:
+        engine = SilentStructureEngine(ticker, interval, config)
+        return engine.evaluate(df_ohlcv)
+    except Exception as e:
+        logger.error(f"[V3_EVALUATE] {ticker}-{interval}: {e}")
+        return SignalResult(reason=f"Error: {e}")

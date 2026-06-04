@@ -1,0 +1,139 @@
+"""
+Trade Validator - Validates trade signals against professional risk rules.
+
+Validates:
+1. Risk-reward ratio >= 2.0 (1:2 minimum)
+2. All prices positive and non-zero
+3. BUY signals: SL < Entry < TP (correct ordering)
+4. SELL signals: TP < Entry < SL (correct ordering)
+5. Risk distance filter: risk % <= 1.5% (tight stops only)
+
+Also checks trade expiration: breakout order expires if not triggered in time.
+
+Sets signal.status and signal.rejection_reason if validation fails.
+"""
+
+import time
+from signals.trade_signal import TradeSignal
+
+
+def validate_trade_signal(signal: TradeSignal) -> bool:
+    """
+    Validate a trade signal against professional risk rules.
+    
+    Parameters:
+    -----------
+    signal : TradeSignal
+        Trade signal to validate
+    
+    Returns:
+    --------
+    bool
+        True if valid, False if rejected (reason in signal.rejection_reason)
+    
+    Side Effects:
+    --------
+    Updates signal.status and signal.rejection_reason if invalid
+    """
+    
+    # Rule 1: Risk-reward must be at least 2.0 (1:2)
+    # Allow for floating-point precision
+    if signal.risk_reward < (2.0 - 1e-4):
+        signal.status = "REJECTED"
+        signal.rejection_reason = (
+            f"Risk-reward too low: {signal.risk_reward:.2f}:1 < 2.0:1"
+        )
+        return False
+    
+    # Rule 2: All prices must be positive
+    if signal.entry_price <= 0 or signal.stop_loss <= 0 or signal.take_profit <= 0:
+        signal.status = "REJECTED"
+        signal.rejection_reason = "Negative or zero prices"
+        return False
+    
+    # Rule 3 & 4: Correct price ordering for direction
+    if signal.direction == 1:  # BUY
+        if not (signal.stop_loss < signal.entry_price < signal.take_profit):
+            signal.status = "REJECTED"
+            signal.rejection_reason = (
+                f"BUY order invalid: SL({signal.stop_loss:.5f}) "
+                f"< Entry({signal.entry_price:.5f}) "
+                f"< TP({signal.take_profit:.5f})"
+            )
+            return False
+    
+    elif signal.direction == -1:  # SELL
+        if not (signal.take_profit < signal.entry_price < signal.stop_loss):
+            signal.status = "REJECTED"
+            signal.rejection_reason = (
+                f"SELL order invalid: TP({signal.take_profit:.5f}) "
+                f"< Entry({signal.entry_price:.5f}) "
+                f"< SL({signal.stop_loss:.5f})"
+            )
+            return False
+    
+    # Rule 5: Risk distance filter - crypto-calibrated thresholds
+    risk_distance = signal.get_risk_amount()
+    risk_percent = risk_distance / signal.entry_price
+
+    MAX_RISK_PERCENT = 0.025        # 2.5% -- crypto-calibrated threshold (raised from 1.5% Forex default)
+    MAX_RISK_PERCENT_CEILING = 0.040  # 4.0% -- absolute hard cap, no signal passes above this
+
+    if risk_percent > MAX_RISK_PERCENT_CEILING:
+        signal.status = "REJECTED"
+        signal.rejection_reason = (
+            f"Risk above hard ceiling: {risk_percent*100:.3f}% > {MAX_RISK_PERCENT_CEILING*100:.1f}% "
+            f"(SL {risk_distance:.5f} away from entry {signal.entry_price:.5f})"
+        )
+        return False
+
+    if risk_percent > MAX_RISK_PERCENT:
+        signal.status = "REJECTED"
+        signal.rejection_reason = (
+            f"Risk too wide: {risk_percent*100:.3f}% > {MAX_RISK_PERCENT*100:.1f}% "
+            f"(SL {risk_distance:.5f} away from entry {signal.entry_price:.5f})"
+        )
+        return False
+    
+    # All rules passed
+    signal.status = "VALIDATED"
+    signal.rejection_reason = None
+    return True
+
+
+def is_trade_expired(trade_signal: TradeSignal) -> bool:
+    """
+    Check if a breakout trade signal has expired.
+    
+    Breakout orders expire if the breakout doesn't occur within the configured
+    number of candles. This prevents late entries and improves signal quality.
+    
+    Parameters:
+    -----------
+    trade_signal : TradeSignal
+        Trade signal to check for expiration
+    
+    Returns:
+    --------
+    bool
+        True if trade has expired (should be rejected)
+        False if trade is still valid (can be sent)
+    
+    Purpose:
+    --------
+    Prevents stale signals from being sent to distribution after their
+    breakout window has closed. Only signals within the valid time window
+    are allowed to execute.
+    """
+    
+    # If expiry not set, trade is valid (safety default)
+    if trade_signal.expiry_timestamp is None:
+        return False
+    
+    # Get current time
+    current_time = int(time.time())
+    
+    # Check if current time is past expiry
+    is_expired = current_time > trade_signal.expiry_timestamp
+    
+    return is_expired

@@ -1,0 +1,2207 @@
+"""
+Database Manager
+Unified database handling for all timeframes and symbols.
+"""
+
+# ============================================================================
+# SYSTEM RULE - CORE FILE PROTECTION
+# ============================================================================
+# This file is CRITICAL INFRASTRUCTURE and must NEVER be replaced.
+# Only patch/modify existing logic.
+# 
+# DO NOT:
+#   - Replace this file with a stripped version
+#   - Remove methods without approval
+#   - Move to a different location
+#
+# Any deployment that replaces this file will cause:
+#   - Loss of strategy state persistence → signals freeze
+#   - Loss of event deduplication → duplicate trades
+#   - Loss of job tracking → audit trail broken
+#
+# Recovery: Restore from database.py in project root
+# ============================================================================
+
+import importlib
+import logging
+import os
+import sqlite3
+import pandas as pd
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional, List, Dict, Tuple
+from .config import Config
+
+
+class DatabaseManager:
+    """
+    Manages SQLite database for storing OHLCV data across all timeframes.
+    
+    Single unified schema with timeframe column to avoid multiple databases.
+    """
+    
+    MIGRATIONS: List[Tuple[str, str]] = [
+        ("migrations.001_tiingo_ml_tables", "run_migration"),
+        ("migrations.002_add_triggered_by", "run_migration"),
+        ("migrations.003_migrate_ohlcv_raw_to_ohlcv_data", "run_migration"),
+        ("migrations.005_create_strategy_state", "run_migration"),
+    ]
+
+    def __init__(self, db_path: str = None):
+        """
+        Initialize database manager
+        
+        Args:
+            db_path: Path to database file (default: from config)
+        """
+        self.db_path = db_path or Config.DB_PATH
+        
+        # === RUNTIME TRACE: DB PATH INITIALIZATION ===
+        logging.info(f"\n{'='*80}")
+        logging.info("DATABASE MANAGER INITIALIZATION")
+        logging.info(f"Config.DB_PATH setting: {Config.DB_PATH}")
+        logging.info(f"db_path parameter: {db_path}")
+        logging.info(f"Resolved self.db_path: {self.db_path}")
+        logging.info(f"Current working directory: {os.getcwd()}")
+        abs_path = os.path.abspath(self.db_path)
+        logging.info(f"Absolute path: {abs_path}")
+        logging.info(f"Path exists: {os.path.exists(abs_path)}")
+        if os.path.exists(abs_path):
+            logging.info(f"File size: {os.path.getsize(abs_path)} bytes")
+        logging.info(f"{'='*80}\n")
+        
+        # Persistent connection - ensures all DB ops see consistent state (prevents race conditions)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        logging.info(f"Connection object ID: {id(self.conn)}")
+        self.init_database()
+
+    def fetch_one(self, query: str, params: list = None):
+        """
+        Execute a query and return the first row result
+        
+        Args:
+            query: SQL query string
+            params: Query parameters (list)
+        
+        Returns:
+            First row as tuple, or None if no results
+        """
+        try:
+            cursor = self.conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            return cursor.fetchone()
+        except Exception as e:
+            logging.error(f"Error in fetch_one: {e}")
+            return None
+
+    def query_all(self, table: str, where: str = None, limit: int = None) -> list:
+        """
+        Execute a SELECT * query and return all matching rows as list of dicts
+        
+        Args:
+            table: Table name to query
+            where: Optional WHERE clause (without the "WHERE" keyword)
+            limit: Optional LIMIT value
+        
+        Returns:
+            List of dictionaries (one per row), or empty list [] on error
+        """
+        # === RUNTIME TRACE: QUERY EXECUTION ===
+        logging.info(f"\n{'─'*80}")
+        logging.info(f"QUERY_ALL EXECUTION: {table}")
+        logging.info(f"Connection ID: {id(self.conn)}")
+        logging.info(f"Database path: {self.db_path}")
+        logging.info(f"Absolute path: {os.path.abspath(self.db_path)}")
+        logging.info(f"WHERE clause: {where if where else 'NONE'}")
+        logging.info(f"LIMIT: {limit if limit else 'NONE'}")
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # === VERIFY TABLES EXIST ===
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+            tables = cursor.fetchall()
+            table_names = [t[0] for t in tables]
+            logging.info(f"Tables in database: {table_names}")
+            
+            if table not in table_names:
+                logging.warning(f"TABLE '{table}' NOT FOUND IN DATABASE!")
+            
+            # === EXECUTE QUERY ===
+            query = f"SELECT * FROM {table}"
+            
+            if where:
+                query += f" WHERE {where}"
+            
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            logging.info(f"Final SQL query: {query}")
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            row_count = len(rows)
+            logging.info(f"Row count returned: {row_count}")
+            
+            # === CHECK ROW COUNT DIRECTLY ===
+            cursor.execute(f"SELECT COUNT(*) FROM {table};")
+            total_count = cursor.fetchone()[0]
+            logging.info(f"Total rows in table: {total_count}")
+            
+            logging.info(f"Status: SUCCESS")
+            logging.info(f"{'─'*80}\n")
+            
+            # Convert sqlite3.Row objects to dictionaries
+            return [dict(row) for row in rows] if rows else []
+        except Exception as e:
+            logging.error(f"\n{'─'*80}")
+            logging.error(f"EXCEPTION IN QUERY_ALL({table})")
+            logging.error(f"Error type: {type(e).__name__}")
+            logging.error(f"Error message: {e}")
+            logging.error(f"Exception traceback: ", exc_info=True)
+            logging.error(f"Database path used: {self.db_path}")
+            logging.error(f"Connection ID: {id(self.conn)}")
+            logging.error(f"Status: FAILED")
+            logging.error(f"{'─'*80}\n")
+            return []
+
+    def init_database(self):
+        """Initialize database with unified schema"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+
+            statements = [
+                '''
+                CREATE TABLE IF NOT EXISTS ohlcv_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    timestamp DATETIME NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume INTEGER DEFAULT 0,
+                    source TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(symbol, timeframe, timestamp)
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_symbol_timeframe 
+                ON ohlcv_data(symbol, timeframe)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_timestamp 
+                ON ohlcv_data(timestamp)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    price REAL NOT NULL,
+                    indicators TEXT,
+                    cascade_data TEXT,
+                    timestamp DATETIME NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS performance_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    total_signals INTEGER DEFAULT 0,
+                    win_signals INTEGER DEFAULT 0,
+                    loss_signals INTEGER DEFAULT 0,
+                    efficiency REAL DEFAULT 0.0,
+                    profit_factor REAL DEFAULT 0.0,
+                    avg_trade REAL DEFAULT 0.0,
+                    max_drawdown REAL DEFAULT 0.0,
+                    timestamp DATETIME NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS ml_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    signal INTEGER NOT NULL,
+                    confidence REAL,
+                    feature_snapshot TEXT,
+                    model_version TEXT,
+                    triggered_by TEXT DEFAULT 'time',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_ml_signals_ticker ON ml_signals(ticker)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_ml_signals_timestamp ON ml_signals(timestamp)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS features (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume REAL,
+                    ema_21 REAL,
+                    ema_100 REAL,
+                    rsi_14 REAL,
+                    obv REAL,
+                    ad REAL,
+                    vwap REAL,
+                    vwap_slope REAL,
+                    volume_sma_20 REAL,
+                    volume_ratio REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker, interval, timestamp)
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_features_ticker_interval 
+                ON features(ticker, interval)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_features_timestamp 
+                ON features(timestamp)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    api_name TEXT NOT NULL,
+                    endpoint TEXT,
+                    ticker TEXT,
+                    interval TEXT,
+                    success INTEGER DEFAULT 1,
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_api_usage_timestamp 
+                ON api_usage(timestamp)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_api_usage_api_name 
+                ON api_usage(api_name)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS model_training_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    train_samples INTEGER,
+                    test_samples INTEGER,
+                    accuracy REAL,
+                    precision_score REAL,
+                    recall REAL,
+                    f1_score REAL,
+                    training_time_seconds REAL,
+                    deployed INTEGER DEFAULT 0,
+                    notes TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_model_log_timestamp 
+                ON model_training_log(timestamp)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS job_execution_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    job_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at DATETIME NOT NULL,
+                    completed_at DATETIME,
+                    duration_seconds REAL,
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS processed_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    ticker TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_timestamp TEXT NOT NULL,
+                    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    expires_at DATETIME NOT NULL
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_processed_events_event_id 
+                ON processed_events(event_id)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_processed_events_ticker 
+                ON processed_events(ticker)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS rate_limits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_name TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    request_count INTEGER DEFAULT 0,
+                    period_start TEXT NOT NULL,
+                    period_end TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS context_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    compression_score REAL,
+                    expansion_pressure REAL,
+                    rsi_stage TEXT,
+                    nearest_liquidity REAL,
+                    liquidity_type TEXT,
+                    distance_to_liquidity REAL,
+                    liquidity_sweep INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_context_ticker_interval 
+                ON context_log(ticker, interval)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_context_timestamp 
+                ON context_log(timestamp)
+                ''',
+                '''
+                CREATE TABLE IF NOT EXISTS signal_forensics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id INTEGER,
+                    timestamp TEXT NOT NULL,
+                    ticker TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    strategy_version TEXT,
+                    model_version TEXT,
+                    price REAL,
+                    ema21 REAL,
+                    ema100_4h REAL,
+                    rsi14 REAL,
+                    is_bull_engulf INTEGER DEFAULT 0,
+                    is_bear_engulf INTEGER DEFAULT 0,
+                    daily_bull INTEGER DEFAULT 0,
+                    daily_bear INTEGER DEFAULT 0,
+                    sl_distance_pips REAL,
+                    tp_distance_pips REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_signal_forensics_signal_id 
+                ON signal_forensics(signal_id)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_signal_forensics_ticker 
+                ON signal_forensics(ticker)
+                ''',
+                '''
+                CREATE INDEX IF NOT EXISTS idx_signal_forensics_timestamp 
+                ON signal_forensics(timestamp)
+                ''',
+            ]
+
+            for statement in statements:
+                cursor.execute(statement)
+
+            self._ensure_triggered_by(cursor)
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._run_migrations()
+
+        print(f"✅ Database initialized: {self.db_path}")
+
+    @staticmethod
+    def _column_exists(cursor: sqlite3.Cursor, table: str, column: str) -> bool:
+        cursor.execute(f"PRAGMA table_info({table})")
+        return any(row[1] == column for row in cursor.fetchall())
+
+    def _ensure_triggered_by(self, cursor: sqlite3.Cursor) -> None:
+        """Ensure ml_signals table contains triggered_by column."""
+        if not self._column_exists(cursor, 'ml_signals', 'triggered_by'):
+            cursor.execute("ALTER TABLE ml_signals ADD COLUMN triggered_by TEXT DEFAULT 'time'")
+
+    def _ensure_trade_construction_columns(self, cursor: sqlite3.Cursor) -> None:
+        """Ensure ml_signals table contains all trade construction columns."""
+        trade_columns = {
+            'trade_id': 'TEXT',
+            'entry_price': 'REAL',
+            'stop_loss': 'REAL',
+            'take_profit': 'REAL',
+            'risk_reward': 'REAL',
+            'entry_type': 'TEXT',
+            'signal_candle_time': 'INTEGER',
+            'expiry_timestamp': 'INTEGER',
+            'expiry_candles': 'INTEGER',
+        }
+        
+        for col_name, col_type in trade_columns.items():
+            if not self._column_exists(cursor, 'ml_signals', col_name):
+                try:
+                    cursor.execute(f"ALTER TABLE ml_signals ADD COLUMN {col_name} {col_type}")
+                except sqlite3.OperationalError:
+                    pass  # Column may already exist
+
+    def _run_migrations(self) -> None:
+        """Execute registered migrations against the configured database."""
+        for module_path, function_name in self.MIGRATIONS:
+            module = importlib.import_module(module_path)
+            migration = getattr(module, function_name, None)
+            if migration is None:
+                continue
+            try:
+                migration(self.db_path)
+            except TypeError:
+                migration()
+
+    def run_migrations(self) -> None:
+        """Public wrapper to execute all migrations."""
+        self._run_migrations()
+
+    @staticmethod
+    def _parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+    def _get_latest_timestamp(self, table: str, ticker: str, interval: str) -> Optional[datetime]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            # Handle different column names for different tables
+            if table == 'ohlcv_data':
+                cursor.execute(
+                    f"""
+                    SELECT timestamp
+                    FROM {table}
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (ticker, interval),
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT timestamp
+                    FROM {table}
+                    WHERE ticker = ? AND interval = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (ticker, interval),
+                )
+            row = cursor.fetchone()
+            return self._parse_timestamp(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def get_latest_raw_timestamp(self, ticker: str, interval: str) -> Optional[datetime]:
+        return self._get_latest_timestamp('ohlcv_data', ticker, interval)
+
+    def get_latest_feature_timestamp(self, ticker: str, interval: str) -> Optional[datetime]:
+        return self._get_latest_timestamp('features', ticker, interval)
+
+    def get_symbol_freshness(
+        self,
+        interval: str,
+        symbols: Optional[List[str]] = None,
+    ) -> List[Dict[str, Optional[float]]]:
+        """Return raw vs feature freshness metrics per symbol."""
+        if symbols is None:
+            symbols = Config.get_symbol_list()
+
+        now = datetime.now(timezone.utc)
+        freshness: List[Dict[str, Optional[float]]] = []
+
+        for symbol in symbols:
+            raw_ts = self.get_latest_raw_timestamp(symbol, interval)
+            feature_ts = self.get_latest_feature_timestamp(symbol, interval)
+
+            def age_minutes(ts: Optional[datetime]) -> Optional[float]:
+                if ts is None:
+                    return None
+                return (now - ts).total_seconds() / 60.0
+
+            raw_age = age_minutes(raw_ts)
+            feature_age = age_minutes(feature_ts)
+
+            freshness.append(
+                {
+                    'symbol': symbol,
+                    'raw_timestamp': raw_ts.isoformat() if raw_ts else None,
+                    'feature_timestamp': feature_ts.isoformat() if feature_ts else None,
+                    'raw_age_minutes': raw_age,
+                    'feature_age_minutes': feature_age,
+                }
+            )
+
+        return freshness
+    
+    def save_ohlcv_data(self, symbol: str, timeframe: str, df: pd.DataFrame, source: str = 'csv'):
+        """
+        Save OHLCV data to database
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe ('1d', '4h', '2h', '1h', '30m')
+            df: DataFrame with OHLCV data (index must be datetime)
+            source: Data source ('csv', 'yahoo', 'api', etc.)
+        """
+        if df is None or df.empty:
+            print(f"⚠️ No data to save for {symbol} {timeframe}")
+            return
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        success_count = 0
+        error_count = 0
+        
+        for timestamp, row in df.iterrows():
+            try:
+                # Ensure timestamp is a datetime object
+                if isinstance(timestamp, str):
+                    timestamp = pd.to_datetime(timestamp)
+                
+                timestamp_str = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+                
+                cursor.execute('''
+                INSERT OR REPLACE INTO ohlcv_data 
+                (symbol, timeframe, timestamp, open, high, low, close, volume, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    symbol,
+                    timeframe,
+                    timestamp_str,
+                    float(row['open']),
+                    float(row['high']),
+                    float(row['low']),
+                    float(row['close']),
+                    int(row.get('volume', 0)),
+                    source
+                ))
+                success_count += 1
+                
+            except Exception as e:
+                error_count += 1
+                if error_count <= 3:
+                    print(f"❌ Error saving {symbol} {timeframe} data: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        if success_count > 0:
+            print(f"  ✅ Saved {success_count} records for {symbol} {timeframe}")
+        if error_count > 0:
+            print(f"  ⚠️ {error_count} errors during save")
+    
+    def load_ohlcv_data(self, symbol: str, timeframe: str, limit: int = None) -> Optional[pd.DataFrame]:
+        """
+        Load OHLCV data from database
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe ('1d', '4h', '2h', '1h', '30m')
+            limit: Maximum number of records to return (most recent)
+        
+        Returns:
+            DataFrame with OHLCV data or None
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            
+            if limit:
+                query = f'''
+                SELECT timestamp, open, high, low, close, volume 
+                FROM ohlcv_data 
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY timestamp DESC
+                LIMIT {limit}
+                '''
+            else:
+                query = '''
+                SELECT timestamp, open, high, low, close, volume 
+                FROM ohlcv_data 
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY timestamp ASC
+                '''
+            
+            df = pd.read_sql_query(query, conn, params=(symbol, timeframe))
+            conn.close()
+            
+            if df.empty:
+                return None
+            
+            # Convert timestamp to datetime and set as index
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
+            
+            # If we limited and ordered DESC, reverse to get ASC
+            if limit:
+                df = df.iloc[::-1]
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error loading {symbol} {timeframe} data: {e}")
+            return None
+    
+    def save_signal(self, symbol: str, timeframe: str, signal_type: str, 
+                   confidence: float, price: float, indicators: Dict = None, 
+                   cascade_data: Dict = None):
+        """
+        Save trading signal to database
+        
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe
+            signal_type: 'long', 'short', 'hold'
+            confidence: Signal confidence (0-100)
+            price: Entry price
+            indicators: Dictionary of indicators
+            cascade_data: Multi-timeframe cascade data
+        """
+        import json
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+            INSERT INTO signals 
+            (symbol, timeframe, signal_type, confidence, price, indicators, cascade_data, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                symbol,
+                timeframe,
+                signal_type,
+                confidence,
+                price,
+                json.dumps(indicators) if indicators else None,
+                json.dumps(cascade_data) if cascade_data else None,
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ))
+            
+            conn.commit()
+            
+        except Exception as e:
+            print(f"❌ Error saving signal: {e}")
+        finally:
+            conn.close()
+    
+    def get_recent_signals(self, symbol: str = None, limit: int = 10) -> List[Dict]:
+        """
+        Get recent signals from database
+        
+        Args:
+            symbol: Filter by symbol (optional)
+            limit: Number of signals to return
+        
+        Returns:
+            List of signal dictionaries
+        """
+        import json
+        
+        conn = sqlite3.connect(self.db_path)
+        
+        if symbol:
+            query = f'''
+            SELECT * FROM signals 
+            WHERE symbol = ?
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+            '''
+            df = pd.read_sql_query(query, conn, params=(symbol,))
+        else:
+            query = f'''
+            SELECT * FROM signals 
+            ORDER BY timestamp DESC
+            LIMIT {limit}
+            '''
+            df = pd.read_sql_query(query, conn)
+        
+        conn.close()
+        
+        signals = []
+        for _, row in df.iterrows():
+            signal = row.to_dict()
+            if signal.get('indicators'):
+                signal['indicators'] = json.loads(signal['indicators'])
+            if signal.get('cascade_data'):
+                signal['cascade_data'] = json.loads(signal['cascade_data'])
+            signals.append(signal)
+        
+        return signals
+    
+    def get_database_stats(self) -> Dict:
+        """
+        Get database statistics
+        
+        Returns:
+            Dictionary with database stats
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        stats = {}
+        
+        # Count records by symbol and timeframe
+        cursor.execute('''
+        SELECT symbol, timeframe, COUNT(*) as count
+        FROM ohlcv_data
+        GROUP BY symbol, timeframe
+        ''')
+        
+        stats['records_by_symbol_tf'] = {}
+        for row in cursor.fetchall():
+            key = f"{row[0]}_{row[1]}"
+            stats['records_by_symbol_tf'][key] = row[2]
+        
+        # Total signals
+        cursor.execute('SELECT COUNT(*) FROM signals')
+        stats['total_signals'] = cursor.fetchone()[0]
+        
+        # Database file size
+        db_path = Path(self.db_path)
+        if db_path.exists():
+            stats['db_size_mb'] = db_path.stat().st_size / (1024 * 1024)
+        
+        conn.close()
+        
+        return stats
+    
+    def get_signal_counts_24h(self) -> Dict:
+        """
+        Get signal counts in the last 24 hours by trigger type
+        
+        Returns:
+            Dictionary with signal counts: {total, time, event}
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        counts = {'total': 0, 'time': 0, 'event': 0}
+        
+        try:
+            # Get timestamp for 24 hours ago
+            from datetime import datetime, timedelta
+            timestamp_24h_ago = (datetime.utcnow() - timedelta(hours=24)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Total signals in last 24h
+            cursor.execute('''
+            SELECT COUNT(*) FROM ml_signals
+            WHERE timestamp > ?
+            ''', (timestamp_24h_ago,))
+            counts['total'] = cursor.fetchone()[0]
+            
+            # Time-based signals (triggered_by = 'time')
+            cursor.execute('''
+            SELECT COUNT(*) FROM ml_signals
+            WHERE timestamp > ? AND triggered_by = 'time'
+            ''', (timestamp_24h_ago,))
+            counts['time'] = cursor.fetchone()[0]
+            
+            # Event-driven signals (triggered_by starts with 'event:')
+            cursor.execute('''
+            SELECT COUNT(*) FROM ml_signals
+            WHERE timestamp > ? AND triggered_by LIKE 'event:%'
+            ''', (timestamp_24h_ago,))
+            counts['event'] = cursor.fetchone()[0]
+            
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Error getting signal counts: {e}")
+        
+        finally:
+            conn.close()
+        
+        return counts
+    
+    def clear_old_data(self, days: int = 90):
+        """
+        Clear data older than specified days
+        
+        Args:
+            days: Keep data from last N days
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cutoff_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        cursor.execute('''
+        DELETE FROM ohlcv_data
+        WHERE timestamp < ?
+        ''', (cutoff_date,))
+        
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        print(f"✅ Deleted {deleted} old records (older than {days} days)")
+    
+    # ==========================================
+    # ML PIPELINE METHODS (Tiingo Upgrade)
+    # ==========================================
+    
+    def save_raw_ohlcv(self, ticker: str, interval: str, candle: Dict, source: str = 'tiingo'):
+        """
+        Save single raw OHLCV candle to ohlcv_raw table
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            candle: Dict with timestamp, open, high, low, close, volume
+            source: Data source
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+            INSERT OR REPLACE INTO ohlcv_raw 
+            (timestamp, ticker, interval, open, high, low, close, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                candle['timestamp'],
+                ticker,
+                interval,
+                candle['open'],
+                candle['high'],
+                candle['low'],
+                candle['close'],
+                candle.get('volume', 0),
+                source
+            ))
+            conn.commit()
+        except Exception as e:
+            print(f"❌ Error saving raw OHLCV: {e}")
+        finally:
+            conn.close()
+    
+    def load_raw_ohlcv(self, ticker: str, interval: str, days: int = 90) -> Optional[pd.DataFrame]:
+        """
+        Load raw OHLCV data from ohlcv_data table
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            days: Number of days to load
+            
+        Returns:
+            DataFrame with raw OHLCV data
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            
+            cutoff_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+            
+            query = '''
+            SELECT timestamp, open, high, low, close, volume 
+            FROM ohlcv_data 
+            WHERE symbol = ? AND timeframe = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+            '''
+            
+            df = pd.read_sql_query(query, conn, params=(ticker, interval, cutoff_date))
+            conn.close()
+            
+            if df.empty:
+                return None
+            
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.set_index('timestamp')
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error loading raw OHLCV: {e}")
+            return None
+    
+    def save_features(self, ticker: str, timestamp: str, interval: str, features: Dict):
+        """
+        Save computed features to features table
+        
+        Args:
+            ticker: Trading symbol
+            timestamp: Timestamp for features
+            interval: Timeframe
+            features: Dict with all computed features
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+            INSERT OR REPLACE INTO features 
+            (timestamp, ticker, interval, open, high, low, close, volume,
+             ema_21, ema_100, rsi_14, obv, ad, vwap, vwap_slope, 
+             volume_sma_20, volume_ratio)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                timestamp,
+                ticker,
+                interval,
+                features.get('open'),
+                features.get('high'),
+                features.get('low'),
+                features.get('close'),
+                features.get('volume'),
+                features.get('ema_21'),
+                features.get('ema_100'),
+                features.get('rsi_14'),
+                features.get('obv'),
+                features.get('ad'),
+                features.get('vwap'),
+                features.get('vwap_slope'),
+                features.get('volume_sma_20'),
+                features.get('volume_ratio')
+            ))
+            conn.commit()
+        except Exception as e:
+            print(f"❌ Error saving features: {e}")
+        finally:
+            conn.close()
+    
+    def load_features(self, ticker: str = None, interval: str = None, days: int = 90) -> Optional[pd.DataFrame]:
+        """
+        Load features from features table
+        
+        Args:
+            ticker: Trading symbol (optional)
+            interval: Timeframe (optional)
+            days: Number of days to load
+            
+        Returns:
+            DataFrame with features
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            
+            cutoff_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+            
+            # Check if lag1 columns exist in the features table
+            # These were added in migration 004_add_lag1_features.py
+            # If migration hasn't run, fall back to base features only
+            lag1_cols = []
+            try:
+                # Try to check for lag1 columns
+                check_query = "PRAGMA table_info(features)"
+                cols_info = pd.read_sql_query(check_query, conn)
+                existing_col_names = cols_info['name'].tolist() if 'name' in cols_info.columns else []
+                
+                lag1_candidates = [
+                    'ema_21_lag1', 'ema_100_lag1', 'rsi_14_lag1',
+                    'obv_lag1', 'ad_lag1', 'vwap_slope_lag1',
+                    'volume_sma_20_lag1', 'volume_ratio_lag1'
+                ]
+                lag1_cols = [col for col in lag1_candidates if col in existing_col_names]
+            except Exception as e:
+                logging.warning(f"Could not check for lag1 columns: {e}")
+                lag1_cols = []
+            
+            # Build feature columns list
+            feature_cols = [
+                'timestamp', 'ticker', 'interval',
+                'open', 'high', 'low', 'close', 'volume',
+                'ema_21', 'ema_100', 'rsi_14',
+                'obv', 'ad', 'vwap', 'vwap_slope',
+                'volume_sma_20', 'volume_ratio',
+            ]
+            
+            # Add lag1 columns if they exist
+            if lag1_cols:
+                feature_cols.extend(lag1_cols)
+                logging.debug(f"Loading {len(lag1_cols)} lag1 columns from database")
+            else:
+                logging.debug("Lag1 columns not available in database - will be created during inference")
+            
+            cols_str = ', '.join(feature_cols)
+            
+            if ticker and interval:
+                query = f'''
+                SELECT {cols_str} FROM features 
+                WHERE ticker = ? AND interval = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+                '''
+                params = (ticker, interval, cutoff_date)
+            elif ticker:
+                query = f'''
+                SELECT {cols_str} FROM features 
+                WHERE ticker = ? AND timestamp >= ?
+                ORDER BY timestamp ASC
+                '''
+                params = (ticker, cutoff_date)
+            else:
+                query = f'''
+                SELECT {cols_str} FROM features 
+                WHERE timestamp >= ?
+                ORDER BY timestamp ASC
+                '''
+                params = (cutoff_date,)
+            
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            
+            if df.empty:
+                return None
+            
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            
+            return df
+            
+        except Exception as e:
+            print(f"❌ Error loading features: {e}")
+            return None
+    
+    def has_recent_signal(self, ticker: str, interval: str, signal: int, minutes: int = 30) -> bool:
+        """
+        Check if a recent signal with the same ticker/interval/direction exists.
+        Used to prevent duplicate signal generation from persistent market conditions.
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            signal: Signal direction (1=BUY, -1=SELL)
+            minutes: Lookback window in minutes (default: 30)
+            
+        Returns:
+            True if a recent signal exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get current time and cutoff (now - minutes)
+            now_timestamp = datetime.now(timezone.utc).isoformat()
+            cutoff_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            
+            cursor.execute(
+                '''
+                SELECT COUNT(*) FROM ml_signals 
+                WHERE ticker = ? AND interval = ? AND signal = ? AND timestamp > ?
+                LIMIT 1
+                ''',
+                (ticker, interval, signal, cutoff_time)
+            )
+            
+            count = cursor.fetchone()[0]
+            conn.close()
+            
+            return count > 0
+        except Exception as e:
+            print(f"⚠️  Error checking for recent signals: {e}")
+            return False
+    
+    def has_recent_signal_with_price(
+        self, 
+        ticker: str, 
+        interval: str, 
+        signal: int,
+        entry_price: float,
+        price_tolerance: float,
+        minutes: int = 60
+    ) -> bool:
+        """
+        Check if an identical signal exists (same ticker/interval/direction and entry price).
+        Allows new breakouts at different prices while blocking exact duplicates.
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            signal: Signal direction (1=BUY, -1=SELL)
+            entry_price: Entry price from new signal
+            price_tolerance: Max price difference to consider as duplicate
+            minutes: Lookback window in minutes (default: 60)
+            
+        Returns:
+            True if an identical signal exists within tolerance, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cutoff_time = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            
+            # Check for signals with same ticker/interval/direction and entry price within tolerance
+            cursor.execute(
+                '''
+                SELECT COUNT(*) FROM ml_signals 
+                WHERE ticker = ? 
+                AND interval = ? 
+                AND signal = ? 
+                AND timestamp > ?
+                AND entry_price IS NOT NULL
+                AND entry_price >= ? AND entry_price <= ?
+                LIMIT 1
+                ''',
+                (ticker, interval, signal, cutoff_time, 
+                 entry_price - price_tolerance, entry_price + price_tolerance)
+            )
+            
+            count = cursor.fetchone()[0]
+            conn.close()
+            
+            return count > 0
+        except Exception as e:
+            print(f"⚠️  Error checking for signal with price: {e}")
+            return False
+    
+    def save_ml_signal(
+        self,
+        ticker: str,
+        timestamp: str,
+        interval: str,
+        signal: int,
+        confidence: float,
+        feature_snapshot: str,
+        model_version: str = 'v1',
+        *,
+        triggered_by: str = 'time',
+        strategy_version: str = 'v1',
+        trade_id: Optional[str] = None,
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        risk_reward: Optional[float] = None,
+        entry_type: Optional[str] = None,
+        signal_candle_time: Optional[int] = None,
+        expiry_timestamp: Optional[int] = None,
+        expiry_candles: Optional[int] = None,
+    ):
+        """
+        Save ML-generated signal to ml_signals table
+        
+        Args:
+            ticker: Trading symbol
+            timestamp: Signal timestamp
+            interval: Timeframe
+            signal: Signal value (1=BUY, -1=SELL, 0=NEUTRAL)
+            confidence: Prediction confidence
+            feature_snapshot: JSON string of features used
+            model_version: Model version identifier
+            triggered_by: Signal source (time-based or event-based)
+            strategy_version: Strategy engine (v1 or v2)
+            trade_id: Unique trade signal ID
+            entry_price: Calculated breakout entry price
+            stop_loss: Calculated stop loss price
+            take_profit: Calculated take profit price
+            risk_reward: Risk-reward ratio
+            entry_type: Entry model type (e.g., 'breakout_confirmation')
+            signal_candle_time: Unix timestamp of signal candle
+            expiry_timestamp: Unix timestamp when trade expires
+            expiry_candles: Number of candles until expiry
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Ensure trade construction columns exist
+            self._ensure_trade_construction_columns(cursor)
+            
+            cursor.execute(
+                '''
+            INSERT INTO ml_signals 
+            (timestamp, ticker, interval, signal, confidence, feature_snapshot, model_version, 
+             triggered_by, strategy_version, trade_id, entry_price, stop_loss, take_profit, 
+             risk_reward, entry_type, signal_candle_time, expiry_timestamp, expiry_candles)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    timestamp,
+                    ticker,
+                    interval,
+                    signal,
+                    confidence,
+                    feature_snapshot,
+                    model_version,
+                    triggered_by,
+                    strategy_version,
+                    trade_id,
+                    entry_price,
+                    stop_loss,
+                    take_profit,
+                    risk_reward,
+                    entry_type,
+                    signal_candle_time,
+                    expiry_timestamp,
+                    expiry_candles,
+                ),
+            )
+            signal_id = cursor.lastrowid
+            conn.commit()
+            return signal_id  # Return signal_id instead of True
+        except Exception as e:
+            print(f"❌ Error saving ML signal: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def log_api_usage(self, api_name: str, endpoint: str, ticker: str, 
+                     interval: str, success: bool, error_msg: str = None):
+        """
+        Log API usage to api_usage table using shared connection
+        
+        Args:
+            api_name: API name (e.g., 'tiingo')
+            endpoint: API endpoint
+            ticker: Symbol requested
+            interval: Timeframe
+            success: Whether request succeeded
+            error_msg: Error message if failed
+        """
+        cursor = self.conn.cursor()
+        
+        try:
+            cursor.execute('''
+            INSERT INTO api_usage 
+            (timestamp, api_name, endpoint, ticker, interval, success, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().isoformat(),
+                api_name,
+                endpoint,
+                ticker,
+                interval,
+                1 if success else 0,
+                error_msg
+            ))
+            self.conn.commit()
+        except Exception as e:
+            print(f"❌ Error logging API usage: {e}")
+    
+    def api_call_exists(self, ticker: str, interval: str, cutoff_minutes: int = 2) -> bool:
+        """
+        Check if API call was recently made for ticker/interval (prevents duplicates)
+        
+        Uses shared connection to ensure accurate dedup across parallel calls.
+        
+        Args:
+            ticker: Symbol to check
+            interval: Timeframe to check
+            cutoff_minutes: Consider "recent" as within last N minutes
+            
+        Returns:
+            True if recent successful API call exists, False otherwise
+        """
+        try:
+            cursor = self.conn.cursor()
+            cutoff = (datetime.now() - timedelta(minutes=cutoff_minutes)).isoformat()
+            
+            cursor.execute('''
+                SELECT 1 FROM api_usage 
+                WHERE ticker = ? AND interval = ? 
+                AND api_name = 'tiingo' AND success = 1
+                AND timestamp > ?
+                LIMIT 1
+            ''', (ticker, interval, cutoff))
+            
+            return cursor.fetchone() is not None
+        except Exception as e:
+            logging.error(f"Error checking API call exists: {e}")
+            return False
+    
+    def cleanup_old_data(self, days: int = 90):
+        """
+        Cleanup old data from all ML tables
+        
+        Args:
+            days: Keep data from last N days
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cutoff_date = (datetime.now() - pd.Timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        tables_cleaned = {}
+        
+        for table in ['ohlcv_data', 'features', 'ml_signals', 'api_usage']:
+            try:
+                cursor.execute(f'''
+                DELETE FROM {table}
+                WHERE timestamp < ?
+                ''', (cutoff_date,))
+                
+                tables_cleaned[table] = cursor.rowcount
+                
+            except Exception as e:
+                print(f"❌ Error cleaning {table}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"\n✅ Data cleanup complete (older than {days} days):")
+        for table, count in tables_cleaned.items():
+            print(f"   {table:20} - {count} records deleted")
+    
+    def log_model_training(self, model_version: str, train_samples: int, 
+                          test_samples: int, accuracy: float, precision: float,
+                          recall: float, f1: float, training_time: float,
+                          deployed: bool = False, notes: str = None):
+        """
+        Log model training results to model_training_log table
+        
+        Args:
+            model_version: Model version identifier
+            train_samples: Number of training samples
+            test_samples: Number of test samples
+            accuracy: Model accuracy
+            precision: Precision score
+            recall: Recall score
+            f1: F1 score
+            training_time: Training time in seconds
+            deployed: Whether model was deployed
+            notes: Additional notes
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+            INSERT INTO model_training_log 
+            (timestamp, model_version, train_samples, test_samples, accuracy,
+             precision_score, recall, f1_score, training_time_seconds, deployed, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().isoformat(),
+                model_version,
+                train_samples,
+                test_samples,
+                accuracy,
+                precision,
+                recall,
+                f1,
+                training_time,
+                1 if deployed else 0,
+                notes
+            ))
+            conn.commit()
+            print(f"✅ Logged model training: {model_version} (accuracy={accuracy:.2%})")
+        except Exception as e:
+            print(f"❌ Error logging model training: {e}")
+        finally:
+            conn.close()
+    
+    def log_job_execution(self, job_id: str, job_name: str, status: str, 
+                          started_at: datetime, completed_at: datetime = None, 
+                          error_message: str = None):
+        """
+        Log job execution for tracking
+        
+        Args:
+            job_id: Unique job identifier (e.g., 'fetch_1h')
+            job_name: Human readable name (e.g., 'Fetch 1h Tiingo Data')
+            status: 'success' or 'failed'
+            started_at: When job started
+            completed_at: When job completed (None if still running)
+            error_message: Error message if failed
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            duration = None
+            if completed_at:
+                duration = (completed_at - started_at).total_seconds()
+            
+            cursor = conn.cursor()
+            cursor.execute('''
+            INSERT INTO job_execution_log 
+            (job_id, job_name, status, started_at, completed_at, duration_seconds, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                job_id,
+                job_name,
+                status,
+                started_at.isoformat(),
+                completed_at.isoformat() if completed_at else None,
+                duration,
+                error_message
+            ))
+            conn.commit()
+        except Exception as e:
+            print(f"❌ Error logging job execution: {e}")
+        finally:
+            conn.close()
+    
+    def get_latest_job_run(self, job_id: str):
+        """
+        Get the latest execution of a specific job
+        
+        Args:
+            job_id: Job identifier
+            
+        Returns:
+            Dictionary with job execution details or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+            SELECT job_id, job_name, status, started_at, completed_at, duration_seconds
+            FROM job_execution_log
+            WHERE job_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            ''', (job_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'job_id': row[0],
+                    'job_name': row[1],
+                    'status': row[2],
+                    'started_at': row[3],
+                    'completed_at': row[4],
+                    'duration_seconds': row[5]
+                }
+            return None
+        finally:
+            conn.close()
+    
+    def get_job_stats_summary(self, job_id: str, hours: int = 24):
+        """
+        Get job execution statistics for a time period
+        
+        Args:
+            job_id: Job identifier
+            hours: Number of hours to look back
+            
+        Returns:
+            Dictionary with success count, error count, last run time
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+            
+            cursor.execute('''
+            SELECT 
+                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as error_count,
+                MAX(completed_at) as last_run
+            FROM job_execution_log
+            WHERE job_id = ? AND created_at > ?
+            ''', (job_id, cutoff_time))
+            
+            row = cursor.fetchone()
+            if row:
+                return {
+                    'success': row[0] or 0,
+                    'errors': row[1] or 0,
+                    'last_run': row[2]
+                }
+            return {'success': 0, 'errors': 0, 'last_run': None}
+        finally:
+            conn.close()
+
+    def mark_event_processed(self, event_id: str, ticker: str, interval: str, 
+                           event_type: str, event_timestamp: str):
+        """
+        Mark an event as processed in the database (persistent storage)
+        
+        Args:
+            event_id: Unique event identifier
+            ticker: Trading symbol
+            interval: Timeframe
+            event_type: Type of event (e.g., 'breakout', 'reversal')
+            event_timestamp: When the event occurred
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Calculate expiry (24 hours from now)
+            expires_at = (datetime.now() + timedelta(hours=24)).isoformat()
+            
+            # Insert or ignore if already exists
+            cursor.execute('''
+            INSERT OR IGNORE INTO processed_events 
+            (event_id, ticker, interval, event_type, event_timestamp, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''', (event_id, ticker, interval, event_type, event_timestamp, expires_at))
+            
+            conn.commit()
+        except Exception as e:
+            print(f"❌ Error marking event processed: {e}")
+        finally:
+            conn.close()
+
+    def is_event_processed(self, event_id: str) -> bool:
+        """
+        Check if an event has already been processed (within 24h window)
+        
+        Args:
+            event_id: Unique event identifier
+            
+        Returns:
+            True if event was processed and not expired, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            now = datetime.now().isoformat()
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM processed_events 
+            WHERE event_id = ? AND expires_at > ?
+            ''', (event_id, now))
+            
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False
+        except Exception as e:
+            print(f"❌ Error checking if event processed: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def cleanup_old_processed_events(self, hours: int = 24):
+        """
+        Delete expired processed events from database
+        
+        Args:
+            hours: Only delete events older than this many hours (default 24)
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+            
+            cursor.execute('''
+            DELETE FROM processed_events 
+            WHERE expires_at < ?
+            ''', (cutoff_time,))
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                print(f"🧹 Cleaned {deleted_count} expired events from database")
+        except Exception as e:
+            print(f"❌ Error cleaning old processed events: {e}")
+        finally:
+            conn.close()
+
+    def expire_old_trades(self, hours_30m: int = 24, hours_1h: int = 48, hours_4h: int = 72) -> int:
+        """
+        Automatically close old trades that haven't been updated.
+        ONLY expires if age > threshold AND price moved past TP/SL monitoring window.
+        
+        This prevents expiring trades that are still logically valid (in monitoring range).
+        
+        Args:
+            hours_30m: Close 30m trades after N hours (default 24h)
+            hours_1h: Close 1h trades after N hours (default 48h)
+            hours_4h: Close 4h trades after N hours (default 72h)
+            
+        Returns:
+            Number of trades expired
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Define expiration thresholds by interval
+            expirations = [
+                ('30m', hours_30m),
+                ('1h', hours_1h),
+                ('4h', hours_4h),
+            ]
+            
+            total_expired = 0
+            now = datetime.now()
+            
+            for interval, hours in expirations:
+                cutoff_time = (now - timedelta(hours=hours)).isoformat()
+                
+                # Get all old ACTIVE trades for this interval
+                cursor.execute('''
+                SELECT id, symbol, direction, entry_price, stop_loss, take_profit 
+                FROM trades 
+                WHERE interval = ? AND status = 'ACTIVE' AND created_at < ?
+                ''', (interval, cutoff_time))
+                
+                old_trades = cursor.fetchall()
+                
+                # Check each trade - only expire if price moved past monitoring window
+                for trade_id, symbol, direction, entry_price, sl, tp in old_trades:
+                    # Get latest price for this symbol (note: ohlcv_data uses 'timeframe' column)
+                    cursor.execute('''
+                    SELECT close FROM ohlcv_data 
+                    WHERE symbol = ? AND timeframe = ? 
+                    ORDER BY timestamp DESC LIMIT 1
+                    ''', (symbol, interval))
+                    
+                    price_row = cursor.fetchone()
+                    if price_row is None:
+                        # No price data - expire conservatively
+                        cursor.execute('UPDATE trades SET status = ? WHERE id = ?', ('EXPIRED', trade_id))
+                        total_expired += 1
+                        continue
+                    
+                    current_price = float(price_row[0])
+                    
+                    # Determine if price moved past monitoring window
+                    is_outside_range = False
+                    
+                    if direction == 'BUY':
+                        # BUY: monitoring is entry to TP (profit side) or entry to SL (loss side)
+                        is_outside_range = (current_price > tp) or (current_price < sl)
+                    else:  # SELL
+                        # SELL: monitoring is entry down to TP or up to SL
+                        is_outside_range = (current_price < tp) or (current_price > sl)
+                    
+                    # Only expire if price moved past monitoring window
+                    if is_outside_range:
+                        cursor.execute('UPDATE trades SET status = ? WHERE id = ?', ('EXPIRED', trade_id))
+                        total_expired += 1
+                        logging.info(
+                            f"[TRADE_EXPIRATION] Expired {direction} {symbol}-{interval} "
+                            f"(age>{hours}h, price {current_price:.5f} outside TP/SL range)"
+                        )
+                    else:
+                        logging.debug(
+                            f"[TRADE_EXPIRATION] Keeping {symbol}-{interval} despite age>{hours}h "
+                            f"(price {current_price:.5f} in range [{min(sl,tp):.5f}, {max(sl,tp):.5f}])"
+                        )
+            
+            conn.commit()
+            return total_expired
+            
+        except Exception as e:
+            logging.error(f"Error in expire_old_trades: {e}")
+            return 0
+        finally:
+            conn.close()
+
+    def has_active_trade(self, symbol: str, interval: str) -> bool:
+        """
+        Check if an ACTIVE trade exists for symbol/interval.
+        Only blocks if trade status is 'ACTIVE' - allows new signals after trade closes.
+        
+        Args:
+            symbol: Trading symbol
+            interval: Timeframe
+            
+        Returns:
+            True if ACTIVE trade exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM trades 
+            WHERE symbol = ? AND interval = ? AND status = 'ACTIVE'
+            ''', (symbol, interval))
+            
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False
+        except Exception as e:
+            logging.warning(f"Error checking has_active_trade for {symbol}-{interval}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def trade_exists(self, symbol: str, interval: str, direction: str, entry_price: float) -> bool:
+        """
+        Check if a trade already exists (prevents duplicate entry signals)
+        DEPRECATED: Use has_active_trade() instead for better behavior
+        
+        Args:
+            symbol: Trading symbol
+            interval: Timeframe
+            direction: Trade direction ('BUY' or 'SELL')
+            entry_price: Entry price
+            
+        Returns:
+            True if trade exists, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Convert direction to signal value (BUY=1, SELL=-1)
+            signal_value = 1 if direction == 'BUY' else -1
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM ml_signals 
+            WHERE ticker = ? AND interval = ? AND signal = ?
+            AND entry_price IS NOT NULL
+            AND ABS(entry_price - ?) < 0.0001
+            ''', (symbol, interval, signal_value, entry_price))
+            
+            result = cursor.fetchone()
+            return result[0] > 0 if result else False
+        except Exception as e:
+            logging.warning(f"Error checking trade_exists for {symbol}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def save_trade(self, trade_data: Dict):
+        """
+        Save trade data to ml_signals table
+        
+        Args:
+            trade_data: Dictionary with trade information (ticker, signal, entry_price, etc.)
+            
+        Returns:
+            signal_id (int) if saved successfully, False otherwise
+        """
+        if not trade_data or 'ticker' not in trade_data:
+            return False
+            
+        try:
+            return self.save_ml_signal(
+                ticker=trade_data.get('ticker'),
+                timestamp=trade_data.get('timestamp'),
+                interval=trade_data.get('interval'),
+                signal=trade_data.get('signal', 0),
+                confidence=trade_data.get('confidence', 1.0),
+                feature_snapshot=trade_data.get('feature_snapshot', '{}'),
+                model_version=trade_data.get('model_version', 'strategy_core_v2'),
+                triggered_by=trade_data.get('triggered_by', 'v2_persistence'),
+                trade_id=trade_data.get('trade_id'),
+                entry_price=trade_data.get('entry_price'),
+                stop_loss=trade_data.get('stop_loss'),
+                take_profit=trade_data.get('take_profit'),
+                risk_reward=trade_data.get('risk_reward'),
+                entry_type=trade_data.get('entry_type'),
+                signal_candle_time=trade_data.get('signal_candle_time'),
+                expiry_timestamp=trade_data.get('expiry_timestamp'),
+                expiry_candles=trade_data.get('expiry_candles'),
+            )
+        except Exception as e:
+            logging.error(f"Error saving trade: {e}")
+            return False
+
+    def mark_signal_broadcasted(self, signal_id: int) -> bool:
+        """
+        Mark a signal as successfully broadcast to Telegram
+        
+        Args:
+            signal_id: ID of the ml_signals row to mark as broadcasted
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "UPDATE ml_signals SET broadcasted = 1 WHERE id = ?",
+                    (signal_id,)
+                )
+            return True
+        except Exception as e:
+            logging.error(f"Failed to mark signal broadcasted: {e}")
+            return False
+
+    def insert_signal_forensics(
+        self,
+        signal_id: int = None,
+        timestamp: str = None,
+        ticker: str = None,
+        interval: str = None,
+        strategy_version: str = None,
+        model_version: str = None,
+        price: float = None,
+        ema21: float = None,
+        ema100_4h: float = None,
+        rsi14: float = None,
+        is_bull_engulf: int = 0,
+        is_bear_engulf: int = 0,
+        daily_bull: int = 0,
+        daily_bear: int = 0,
+        sl_distance_pips: float = None,
+        tp_distance_pips: float = None
+    ) -> bool:
+        """
+        Insert forensic data for signal broadcast (debugging and validation)
+        
+        Args:
+            signal_id: Reference to ml_signals.id
+            timestamp: Signal generation timestamp
+            ticker: Currency pair symbol
+            interval: Timeframe ('30m', '1h', '4h', etc.)
+            strategy_version: 'v1' or 'v2'
+            model_version: Full version string
+            price: Current price at creation
+            ema21: EMA21 value
+            ema100_4h: 4H EMA100 value
+            rsi14: RSI14 value
+            is_bull_engulf: 1 if bullish engulfing, 0 otherwise
+            is_bear_engulf: 1 if bearish engulfing, 0 otherwise
+            daily_bull: 1 if daily bullish alignment, 0 otherwise
+            daily_bear: 1 if daily bearish alignment, 0 otherwise
+            sl_distance_pips: Stop loss distance in pips
+            tp_distance_pips: Take profit distance in pips
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self.conn:
+                self.conn.execute(
+                    """INSERT INTO signal_forensics
+                       (signal_id, timestamp, ticker, interval, strategy_version, model_version,
+                        price, ema21, ema100_4h, rsi14, is_bull_engulf, is_bear_engulf,
+                        daily_bull, daily_bear, sl_distance_pips, tp_distance_pips)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (signal_id, timestamp, ticker, interval, strategy_version, model_version,
+                     price, ema21, ema100_4h, rsi14, is_bull_engulf, is_bear_engulf,
+                     daily_bull, daily_bear, sl_distance_pips, tp_distance_pips)
+                )
+            return True
+        except Exception as e:
+            logging.error(f"Failed to insert signal forensics: {e}")
+            return False
+
+    def get_processed_events_count(self) -> int:
+        """
+        Get count of currently valid (non-expired) processed events
+        
+        Returns:
+            Number of events still in the 24-hour window
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            now = datetime.now().isoformat()
+            
+            cursor.execute('''
+            SELECT COUNT(*) FROM processed_events 
+            WHERE expires_at > ?
+            ''', (now,))
+            
+            result = cursor.fetchone()
+            return result[0] if result else 0
+        except Exception as e:
+            print(f"❌ Error getting processed events count: {e}")
+            return 0
+        finally:
+            conn.close()
+
+    def log_context(self, ticker: str, interval: str, timestamp: str, context_state: Dict) -> bool:
+        """
+        Log context engine state to database for observation phase
+        
+        Called once per bar after context_engine.compute_context()
+        Logs even if context doesn't trigger signals (observation phase)
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            timestamp: ISO datetime string
+            context_state: Dict from context_engine.compute_context() with 7 fields
+        
+        Returns:
+            True if logged successfully, False otherwise
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            INSERT INTO context_log 
+            (ticker, interval, timestamp, compression_score, expansion_pressure, 
+             rsi_stage, nearest_liquidity, liquidity_type, distance_to_liquidity, liquidity_sweep)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                ticker,
+                interval,
+                timestamp,
+                context_state.get('compression_score', 0.0),
+                context_state.get('expansion_pressure', 0.0),
+                context_state.get('rsi_stage', 'NEUTRAL'),
+                context_state.get('nearest_liquidity', 0.0),
+                context_state.get('liquidity_type', 'none'),
+                context_state.get('distance_to_liquidity', 0.0),
+                1 if context_state.get('liquidity_sweep', False) else 0
+            ))
+            
+            conn.commit()
+            return True
+            
+        except Exception as e:
+            logging.error(f"[CONTEXT] Failed to log context for {ticker}-{interval}: {e}")
+            return False
+        finally:
+            conn.close()
+
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_latest_context(self, ticker: str, interval: str) -> dict:
+        """Fetch most recent context snapshot for a symbol+interval pair."""
+        row = self.fetch_one(
+            """
+            SELECT compression_score, expansion_pressure, rsi_stage,
+                   liquidity_sweep, liquidity_type, nearest_liquidity
+            FROM context_log
+            WHERE ticker = ? AND interval = ?
+            ORDER BY rowid DESC LIMIT 1
+            """,
+            [ticker, interval]
+        )
+        if not row:
+            return {}
+        return {
+            compression_score:  row[0],
+            expansion_pressure: row[1],
+            rsi_stage:          row[2],
+            liquidity_sweep:    bool(row[3]),
+            liquidity_type:     row[4],
+            nearest_liquidity:  row[5],
+        }
+
+    # STRATEGY STATE PERSISTENCE - V2 STATEFUL OPERATIONS
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def load_strategy_state(
+        self,
+        ticker: str,
+        interval: str,
+        strategy_name: str = 'strategy_core_v2'
+    ) -> Optional[Dict]:
+        """
+        Load V2 SequenceState from database.
+        
+        Returns complete state dict for SequenceState reconstruction:
+        {
+            'bull_extreme_visited': bool,
+            'bear_extreme_visited': bool,
+            'extreme_bar': int,
+            'bull_break_bar': int | None,
+            'bear_break_bar': int | None,
+            'bull_retest_done': bool,
+            'bear_retest_done': bool,
+            'bull_retest_bar': int | None,
+            'bear_retest_bar': int | None,
+            'bull_entry_armed': bool,
+            'bear_entry_armed': bool,
+            'bull_entry_window_bar': int | None,
+            'bear_entry_window_bar': int | None,
+            'last_processed_bar_time': str | None,
+        }
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT 
+                    bull_extreme_visited, bear_extreme_visited, extreme_bar,
+                    bull_break_bar, bear_break_bar,
+                    bull_retest_done, bear_retest_done, bull_retest_bar, bear_retest_bar,
+                    bull_entry_armed, bear_entry_armed, bull_entry_window_bar, bear_entry_window_bar,
+                    last_processed_bar_time
+                FROM strategy_state 
+                WHERE ticker = ? AND interval = ? AND strategy_name = ?
+            ''', (ticker, interval, strategy_name))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'bull_extreme_visited': bool(row[0]),
+                    'bear_extreme_visited': bool(row[1]),
+                    'extreme_bar': row[2] or 0,
+                    'bull_break_bar': row[3],
+                    'bear_break_bar': row[4],
+                    'bull_retest_done': bool(row[5]),
+                    'bear_retest_done': bool(row[6]),
+                    'bull_retest_bar': row[7],
+                    'bear_retest_bar': row[8],
+                    'bull_entry_armed': bool(row[9]),
+                    'bear_entry_armed': bool(row[10]),
+                    'bull_entry_window_bar': row[11],
+                    'bear_entry_window_bar': row[12],
+                    'last_processed_bar_time': row[13],
+                }
+            return None
+            
+        except Exception as e:
+            logging.warning(f"Error loading strategy state for {ticker}-{interval}: {e}")
+            return None
+    
+    def save_strategy_state(
+        self,
+        ticker: str,
+        interval: str,
+        strategy_name: str,
+        state: Dict
+    ) -> bool:
+        """
+        Save V2 SequenceState to database.
+        
+        Args:
+            state: Dict with keys from SequenceState dataclass
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO strategy_state
+                (ticker, interval, strategy_name,
+                 bull_extreme_visited, bear_extreme_visited, extreme_bar,
+                 bull_break_bar, bear_break_bar,
+                 bull_retest_done, bear_retest_done, bull_retest_bar, bear_retest_bar,
+                 bull_entry_armed, bear_entry_armed, bull_entry_window_bar, bear_entry_window_bar,
+                 last_processed_bar_time, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                ticker,
+                interval,
+                strategy_name,
+                1 if state.get('bull_extreme_visited', False) else 0,
+                1 if state.get('bear_extreme_visited', False) else 0,
+                state.get('extreme_bar', 0),
+                state.get('bull_break_bar'),
+                state.get('bear_break_bar'),
+                1 if state.get('bull_retest_done', False) else 0,
+                1 if state.get('bear_retest_done', False) else 0,
+                state.get('bull_retest_bar'),
+                state.get('bear_retest_bar'),
+                1 if state.get('bull_entry_armed', False) else 0,
+                1 if state.get('bear_entry_armed', False) else 0,
+                state.get('bull_entry_window_bar'),
+                state.get('bear_entry_window_bar'),
+                state.get('last_processed_bar_time'),
+                datetime.now(timezone.utc).isoformat()
+            ))
+            
+            conn.commit()
+            conn.close()
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error saving strategy state for {ticker}-{interval}: {e}")
+            return False
+    
+    def clear_strategy_state(
+        self,
+        ticker: str,
+        interval: str,
+        strategy_name: str = 'strategy_core_v2'
+    ) -> bool:
+        """
+        Clear strategy state (reset to initial).
+        
+        Args:
+            ticker: Trading symbol
+            interval: Timeframe
+            strategy_name: Strategy identifier
+            
+        Returns:
+            True if successful
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM strategy_state 
+                WHERE ticker = ? AND interval = ? AND strategy_name = ?
+            ''', (ticker, interval, strategy_name))
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"Cleared state for {ticker}-{interval}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error clearing strategy state: {e}")
+            return False
+
+    def bootstrap_strategy_state(self) -> bool:
+        """
+        Ensure all (ticker, interval, strategy_name) rows exist in strategy_state.
+        
+        Called on startup to establish all planned state records before processing begins.
+        Uses ENTRY_TIMEFRAMES from config.
+        
+        Returns:
+            True if all rows created/verified successfully
+        """
+        try:
+            from .config import Config
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            symbols = Config.get_symbol_list()
+            intervals = Config.ENTRY_TIMEFRAMES
+            strategy_name = 'strategy_core_v2'
+            
+            total_rows = 0
+            for symbol in symbols:
+                for interval in intervals:
+                    # INSERT OR IGNORE - if row exists, do nothing. If doesn't exist, create default state.
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO strategy_state
+                        (ticker, interval, strategy_name,
+                         bull_extreme_visited, bear_extreme_visited, extreme_bar,
+                         bull_break_bar, bear_break_bar,
+                         bull_retest_done, bear_retest_done, bull_retest_bar, bear_retest_bar,
+                         bull_entry_armed, bear_entry_armed, bull_entry_window_bar, bear_entry_window_bar,
+                         last_processed_bar_time, last_updated)
+                        VALUES (?, ?, ?, 0, 0, 0, NULL, NULL, 0, 0, NULL, NULL, 0, 0, NULL, NULL, NULL, ?)
+                    ''', (symbol, interval, strategy_name, datetime.now(timezone.utc).isoformat()))
+                    total_rows += 1
+            
+            # Verify total count
+            cursor.execute('SELECT COUNT(*) FROM strategy_state')
+            final_count = cursor.fetchone()[0]
+            
+            conn.commit()
+            conn.close()
+            
+            expected_count = len(symbols) * len(intervals)
+            logging.info(
+                f"✅ Strategy state bootstrap complete:\n"
+                f"   Symbols: {len(symbols)}\n"
+                f"   Intervals: {len(intervals)} {intervals}\n"
+                f"   Expected rows: {expected_count}\n"
+                f"   Actual rows: {final_count}"
+            )
+            
+            return final_count >= expected_count
+            
+        except Exception as e:
+            logging.error(f"Error bootstrapping strategy state: {e}")
+            return False
+

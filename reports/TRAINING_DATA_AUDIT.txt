@@ -1,0 +1,59 @@
+====================================================================================================
+TRAINING DATA AUDIT - LABEL DISTRIBUTION
+Generated: 2026-02-17T11:53:02.155015+00:00
+Period: 2025-11-19 to 2026-02-17 (90 days)
+====================================================================================================
+
+1. TRAINING DATA INVENTORY
+----------------------------------------------------------------------------------------------------
+Total OHLCV rows: 50824
+
+Symbol     Count     
+----------------------------------------------------------------------------------------------------
+USDJPY     4254      
+EURUSD     4254      
+EURGBP     4254      
+CADJPY     4254      
+AUDUSD     4254      
+AUDJPY     4254      
+GBPUSD     4253      
+USDCAD     4251      
+AUDCAD     4248      
+GBPJPY     4246      
+EURJPY     4235      
+XAUUSD     4067      
+
+2. HISTORICAL SIGNAL DISTRIBUTION
+----------------------------------------------------------------------------------------------------
+Signal     Count      Percentage  
+----------------------------------------------------------------------------------------------------
+SELL       2299              3.7%
+NEUTRAL    30471            49.5%
+BUY        28848            46.8%
+
+3. PRICE ACTION DISTRIBUTION (Training Basis)
+----------------------------------------------------------------------------------------------------
+Movement        Count      Percentage  
+----------------------------------------------------------------------------------------------------
+Up (BUY)        25583            50.3%
+Down (SELL)     24706            48.6%
+Flat (NEUTRAL)  523               1.0%
+
+4. ANALYSIS: EXPECTED vs OBSERVED SELL SIGNALS
+----------------------------------------------------------------------------------------------------
+Training data shows:
+  - 48.6% price movements were DOWNWARD (should train SELL)
+
+Production model outputs:
+  - 0.0% SELL signals
+
+CRITICAL: 48.6% of expected SELL signals are missing!
+
+CONCLUSION:
+The model was trained on data WITH downward movements,
+but is NOT outputting SELL signals in production.
+This indicates:
+  a) Model converged to always predict class 1 (BUY)
+  b) Decision boundary is miscalibrated
+  c) Post-processing is filtering SELL predictions
+

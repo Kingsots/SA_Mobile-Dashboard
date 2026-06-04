@@ -1,0 +1,38 @@
+================================================================================
+CLASSIFICATION BIAS INVESTIGATION REPORT
+Generated: 2026-02-17T11:34:17.173751+00:00
+Database: trading_bot.db
+Period: 2026-01-20T00:00:00 onwards (20 trading days)
+================================================================================
+
+1. FINAL SIGNAL DISTRIBUTION
+--------------------------------------------------------------------------------
+  BUY      :    506 (  48.1%)
+  SELL     :      0 (   0.0%)
+  NEUTRAL  :    546 (  51.9%)
+  TOTAL    :   1052
+
+2. EVENT TYPE BREAKDOWN
+--------------------------------------------------------------------------------
+Event Type                                       BUY   SELL  NEUTRAL
+--------------------------------------------------------------------------------
+event:volatility_expansion                       230      0      284
+event:rsi_rejection_bearish                      137      0      101
+event:rsi_rebound_bullish                         82      0       77
+event:trendline_break_resistance                  36      0       44
+event:trendline_break_support                     17      0       31
+event:engulfed_structure_bullish                   4      0        5
+event:engulfed_structure_bearish                   0      0        4
+
+3. CRITICAL FLAGS
+--------------------------------------------------------------------------------
+  🚨 ZERO_SELL_SIGNALS
+  🚨 SELL_LESS_THAN_5_PERCENT
+  🚨 ZERO_SELL_event:rsi_rejection_bearish
+  🚨 ZERO_SELL_event:trendline_break_support
+  🚨 ZERO_SELL_event:engulfed_structure_bearish
+
+4. CONFIDENCE STATISTICS
+--------------------------------------------------------------------------------
+  BUY: mean=0.6406, n=506
+  NEUTRAL: mean=0.6390, n=546

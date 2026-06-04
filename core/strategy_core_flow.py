@@ -1,0 +1,544 @@
+"""
+strategy_core_flow.py
+=====================
+FLOW-IGNITE Engine — Intraday Capital Flow Detection
+OptiCore Labs · Silent Analyst · Added: May 25 2026
+
+STATELESS — evaluates each candle independently.
+No persistence. No side effects. No DB access.
+Called once per 15m candle close for each Flow-eligible symbol.
+
+Signal Logic (empirically calibrated — Brief 3C, May 24 2026):
+  1. Key level detection (session high/low, horizontal S/R)
+  2. Body break: full candle body crosses the level cleanly
+  3. Volume: break candle > FLOW_VOLUME_MULTIPLIER x volume_sma_20
+  4. EMA21 alignment: close > ema_21 (LONG), close < ema_21 (SHORT)
+  5. Body commitment: abs(close-open) / ATR14 >= FLOW_BODY_COMMITMENT_MIN
+  6. CLV: computed and stored — HIGH_CONVICTION badge if >= threshold
+     (NOT a hard gate — scoring modifier only per architecture spec)
+
+Cooldown (signal deduplication):
+  Enforced at the SCHEDULER layer via has_open_signal() +
+  three-layer dedup system. This engine is pure detection only.
+
+Excluded per architecture spec:
+  - Trendlines / regression structures / diagonal breakouts
+
+Returns:
+  FlowSignal dataclass if all conditions met
+  None otherwise
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# ── DIRECTION CONSTANTS ───────────────────────────────────────────────────────
+LONG  = 1
+SHORT = -1
+
+
+# ── FlowSignal DATACLASS ─────────────────────────────────────────────────────
+@dataclass
+class FlowSignal:
+    """
+    Output of FLOW-IGNITE engine evaluation.
+
+    Consumed by build_flow_trade_signal() in trade_constructor.py
+    (Brief 6B) to produce a TradeSignal with SL/TP.
+
+    All price fields are raw floats — rounding happens downstream.
+    """
+    # Identity
+    symbol:           str
+    interval:         str
+    direction:        int        # LONG=1, SHORT=-1
+
+    # Candle context
+    timestamp:        datetime   # candle timestamp of the signal bar
+    entry:            float      # signal candle close (=entry price)
+    candle_open:      float
+    candle_high:      float
+    candle_low:       float
+    candle_close:     float      # same as entry
+
+    # Structural level
+    key_level:        float      # price level that was broken
+    level_type:       str        # SESSION_HIGH|SESSION_LOW|SR_CLUSTER
+
+    # Quality metrics (exposed for forensics from day one)
+    clv:              float      # Close Location Value 0.0-1.0
+    vol_ratio:        float      # volume / volume_sma_20
+    body_commitment:  float      # abs(close-open) / atr_14
+    atr_14:           float      # ATR14 at signal time
+
+    # Classification
+    high_conviction:  bool       # True if CLV >= FLOW_HIGH_CONVICTION_CLV
+
+    # Metadata
+    strategy_version: str = 'v4'
+    engine_name:      str = 'FLOW-IGNITE'
+
+
+# ── FlowConfig ───────────────────────────────────────────────────────────────
+@dataclass
+class FlowConfig:
+    """
+    Engine configuration — populated from core.config.Config.
+    Decoupled from Config so the engine is testable in isolation.
+    """
+    volume_multiplier:      float = 3.0
+    level_lookback_bars:    int   = 48
+    body_commitment_min:    float = 0.40
+    ema_period:             int   = 21
+    high_conviction_clv:    float = 0.85
+    min_bars_required:      int   = 100
+
+
+def get_flow_config() -> FlowConfig:
+    """
+    Build FlowConfig from production Config.
+    Falls back to dataclass defaults if Config import fails.
+    Logs a warning if fallback is used — this should never
+    happen in production.
+    """
+    try:
+        from core.config import Config
+        return FlowConfig(
+            volume_multiplier=Config.FLOW_VOLUME_MULTIPLIER,
+            level_lookback_bars=Config.FLOW_LEVEL_LOOKBACK_BARS,
+            body_commitment_min=Config.FLOW_BODY_COMMITMENT_MIN,
+            ema_period=Config.FLOW_EMA_PERIOD,
+            high_conviction_clv=Config.FLOW_HIGH_CONVICTION_CLV,
+            min_bars_required=Config.FLOW_MIN_BARS_REQUIRED,
+        )
+    except Exception as e:
+        logger.warning(
+            f"[FLOW-IGNITE] Config import failed — using defaults: {e}"
+        )
+        return FlowConfig()
+
+
+# ── FLOW-IGNITE ENGINE ────────────────────────────────────────────────────────
+class FlowIgniteEngine:
+    """
+    FLOW-IGNITE: Stateless intraday capital flow detection.
+
+    Evaluates the most recently closed candle in df_ohlcv.
+    Expects df_ohlcv and df_features to already be loaded
+    and trimmed by the caller (scheduler layer).
+
+    Interface matches V3 class pattern for consistency with
+    the engine dispatcher in xgb_signal_engine_ec2.py.
+    """
+
+    def __init__(self, config: Optional[FlowConfig] = None):
+        self.config = config or get_flow_config()
+
+    def evaluate(
+        self,
+        df_ohlcv:    pd.DataFrame,
+        df_features: Optional[pd.DataFrame] = None,
+        symbol:      str = None,
+        interval:    str = '15m',
+    ) -> Optional[FlowSignal]:
+        """
+        Evaluate the current (most recent) candle for a Flow signal.
+
+        Args:
+            df_ohlcv:    Raw OHLCV DataFrame — indexed by timestamp
+                         (datetime, chronological ASC).
+                         Columns: open, high, low, close, volume
+                         Source: db.load_raw_ohlcv(symbol, interval)
+
+            df_features: Feature DataFrame for this symbol/interval.
+                         Must contain: ema_21, volume_sma_20, volume_ratio
+                         Source: db.load_features(ticker=symbol,
+                                                  interval=interval)
+
+            symbol:      Ticker string e.g. 'WLDUSDT'
+            interval:    Timeframe string e.g. '15m'
+
+        Returns:
+            FlowSignal if all conditions met.
+            None if any condition fails or data is insufficient.
+        """
+        cfg = self.config
+
+        # ── MINIMUM DATA GATE ─────────────────────────────────────────────
+        if df_ohlcv is None or len(df_ohlcv) < cfg.min_bars_required:
+            logger.debug(
+                f"[FLOW-IGNITE] {symbol} {interval}: "
+                f"insufficient bars ({len(df_ohlcv) if df_ohlcv is not None else 0} "
+                f"< {cfg.min_bars_required})"
+            )
+            return None
+
+        # ── STRIP FORMING CANDLE (closed-bar guard) ──────────────────
+        # The scheduler fires at :02/:17/:32/:47 UTC — 2 min after candle
+        # close. Bybit writes the just-opened (forming) candle to ohlcv_data
+        # immediately on open. That candle has near-zero body and volume and
+        # must not be evaluated. Strip any row whose timestamp >= the current
+        # 15m floor (= the forming candle's open timestamp).
+        _now_utc = datetime.utcnow()
+        _interval_mins = 15  # FLOW_PRIMARY_INTERVAL is always '15m'
+        _floor_min = (_now_utc.minute // _interval_mins) * _interval_mins
+        _forming_ts = _now_utc.replace(
+            minute=_floor_min, second=0, microsecond=0
+        )
+        # Strip rows at or beyond the forming candle boundary
+        df_ohlcv = df_ohlcv[df_ohlcv.index < pd.Timestamp(_forming_ts)]
+        if len(df_ohlcv) < cfg.min_bars_required:
+            logger.debug(
+                "[FLOW] [%s] Insufficient bars after forming-candle "
+                "strip: %d < %d" % (symbol, len(df_ohlcv), cfg.min_bars_required)
+            )
+            return None
+        # ─────────────────────────────────────────────────────────────────
+
+        # ── EXTRACT CURRENT CANDLE (most recent closed bar) ───────────────
+        current  = df_ohlcv.iloc[-1]   # now guaranteed to be a closed bar
+        c_open   = float(current['open'])
+        c_high   = float(current['high'])
+        c_low    = float(current['low'])
+        c_close  = float(current['close'])
+        c_volume = float(current['volume'])
+        c_ts     = df_ohlcv.index[-1]
+
+        # Normalise timestamp to datetime
+        if isinstance(c_ts, pd.Timestamp):
+            c_ts = c_ts.to_pydatetime()
+
+        # ── EXTRACT FEATURE VALUES (most recent row) ──────────────────────
+        # -- COMPUTE FEATURES INLINE FROM OHLCV ---------------------------------
+        # Coherence guaranteed: derived from the same stripped OHLCV being
+        # evaluated. Forming candle is already stripped above, so iloc[-1]
+        # resolves to the last CLOSED bar for all three values.
+        # Mirrors the proven pattern at lines 930/1226 of async_scheduler.py
+        # (generate_signals_job / event_monitor inline computation).
+        # eod_pipeline_job is unregistered; the features table cannot be kept
+        # intraday-fresh at 15m cadence. df_features parameter is ignored.
+        try:
+            _ema_21_series     = df_ohlcv['close'].ewm(span=21, adjust=False).mean()
+            _vol_sma_20_series = df_ohlcv['volume'].rolling(window=20).mean()
+
+            ema_21     = float(_ema_21_series.iloc[-1])
+            vol_sma_20 = float(_vol_sma_20_series.iloc[-1])
+
+            if not np.isfinite(ema_21) or ema_21 == 0:
+                return None
+            if not np.isfinite(vol_sma_20) or vol_sma_20 <= 0:
+                return None
+
+            vol_ratio = c_volume / vol_sma_20
+            if not np.isfinite(vol_ratio):
+                return None
+        except Exception as e:
+            logger.debug(
+                "[FLOW] [%s] Inline feature computation failed: %s"
+                % (symbol, e)
+            )
+            return None
+        # -------------------------------------------------------------------------
+
+        # ── COMPUTE ATR14 INLINE ──────────────────────────────────────────
+        # Wilder's method — does not depend on features table ATR column
+        atr_14 = self._compute_atr14(df_ohlcv)
+        if atr_14 is None or atr_14 <= 0:
+            return None
+
+        # ── BODY SIZE CHECK ───────────────────────────────────────────────
+        body = abs(c_close - c_open)
+        if body == 0:
+            return None
+
+        # ── BODY COMMITMENT FILTER ────────────────────────────────────────
+        # body / ATR14 must meet minimum threshold
+        body_commitment = body / atr_14
+        if body_commitment < cfg.body_commitment_min:
+            return None
+
+        # ── VOLUME CONFIRMATION ───────────────────────────────────────────
+        # Break candle volume must exceed multiplier x 20-bar average
+        if c_volume < cfg.volume_multiplier * vol_sma_20:
+            return None
+
+        # ── KEY LEVEL DETECTION ───────────────────────────────────────────
+        # Use the lookback window EXCLUDING the current candle
+        lookback_df = df_ohlcv.iloc[
+            -(cfg.level_lookback_bars + 1):-1
+        ]
+        if len(lookback_df) < 10:
+            return None
+
+        levels = self._detect_key_levels(lookback_df)
+        if not levels:
+            return None
+
+        # ── BODY BREAK DETECTION ──────────────────────────────────────────
+        # Scan levels in priority order (session extremes first).
+        # First matching level triggers the signal — one signal per candle.
+        signal_direction  = None
+        signal_level      = None
+        signal_level_type = None
+
+        for level_price, level_type, _touch_count in levels:
+            # BULLISH body break:
+            #   candle OPENED below the level AND CLOSED above it
+            if c_open < level_price < c_close:
+                signal_direction  = LONG
+                signal_level      = level_price
+                signal_level_type = level_type
+                break
+
+            # BEARISH body break:
+            #   candle OPENED above the level AND CLOSED below it
+            if c_open > level_price > c_close:
+                signal_direction  = SHORT
+                signal_level      = level_price
+                signal_level_type = level_type
+                break
+
+        if signal_direction is None:
+            return None
+        # ── BREAKOUT DISTANCE GATE ───────────────────────────
+        # Close must clear the level by >= FLOW_MIN_BREAK_PCT.
+        # Prevents marginal grazing breaks -- close must show
+        # meaningful commitment beyond the structural level.
+        # Empirical basis: TRUMPUSDT grazed 0.09% above level.
+        try:
+            from core.config import Config as _Cfg
+            min_break = _Cfg.FLOW_MIN_BREAK_PCT
+        except Exception:
+            min_break = 0.003  # safe fallback
+        if signal_direction == LONG:
+            if (c_close - signal_level) / signal_level < min_break:
+                return None
+        else:
+            if (signal_level - c_close) / signal_level < min_break:
+                return None
+
+
+        # ── EMA21 ALIGNMENT ───────────────────────────────────────────────
+        # Price must be on the correct side of EMA21
+        if signal_direction == LONG  and c_close <= ema_21:
+            return None
+        if signal_direction == SHORT and c_close >= ema_21:
+            return None
+
+        # ── CLV COMPUTATION ───────────────────────────────────────────────
+        # Close Location Value — stored as quality metric, not a hard gate
+        clv = self._compute_clv(c_high, c_low, c_close, signal_direction)
+
+        high_conviction = clv >= cfg.high_conviction_clv
+
+        # ── ALL CONDITIONS MET — CONSTRUCT FlowSignal ─────────────────────
+        logger.info(
+            f"[FLOW-IGNITE] {symbol} {interval} "
+            f"{'LONG' if signal_direction == LONG else 'SHORT'} "
+            f"@ {c_close:.6f} | level={signal_level:.6f} "
+            f"({signal_level_type}) | "
+            f"vol={vol_ratio:.1f}x | "
+            f"CLV={clv:.3f} | "
+            f"{'STAR HIGH_CONVICTION' if high_conviction else ''}"
+        )
+
+        return FlowSignal(
+            symbol          = symbol,
+            interval        = interval,
+            direction       = signal_direction,
+            timestamp       = c_ts,
+            entry           = c_close,
+            candle_open     = c_open,
+            candle_high     = c_high,
+            candle_low      = c_low,
+            candle_close    = c_close,
+            key_level       = signal_level,
+            level_type      = signal_level_type,
+            clv             = round(clv, 4),
+            vol_ratio       = round(vol_ratio, 4),
+            body_commitment = round(body_commitment, 4),
+            atr_14          = round(atr_14, 8),
+            high_conviction = high_conviction,
+            strategy_version= 'v4',
+            engine_name     = 'FLOW-IGNITE',
+        )
+
+    # ── PRIVATE METHODS ───────────────────────────────────────────────────────
+
+    def _detect_key_levels(
+        self,
+        lookback_df: pd.DataFrame,
+    ) -> List[Tuple[float, str, int]]:
+        """
+        Detect structural key levels from the lookback window.
+
+        Returns list of (price, type, touch_count) tuples.
+        Ordered by priority:
+          1. SESSION_HIGH (absolute high of lookback)
+          2. SESSION_LOW  (absolute low of lookback)
+          3. SR_CLUSTER   (price levels touched >= 2 times,
+                           within 0.3% tolerance band)
+
+        Only SESSION extremes and horizontal S/R are used.
+        No trendlines, regression structures, or diagonals.
+        """
+        levels: List[Tuple[float, str, int]] = []
+
+        highs = lookback_df['high'].values.astype(float)
+        lows  = lookback_df['low'].values.astype(float)
+
+        if len(highs) == 0:
+            return levels
+
+        # ── SESSION EXTREMES ─────────────────────────────────────────────
+        session_high = float(np.nanmax(highs))
+        session_low  = float(np.nanmin(lows))
+        levels.append((session_high, 'SESSION_HIGH', 1))
+        levels.append((session_low,  'SESSION_LOW',  1))
+
+        # ── HORIZONTAL S/R CLUSTERS ──────────────────────────────────────
+        # Pool all candle extremes as candidate touch points
+        all_extremes = np.concatenate([highs, lows])
+        tolerance    = 0.003   # 0.3% band (empirically sound for crypto)
+
+        # Cluster adjacent extremes — use sorted sweep to avoid O(n^2)
+        sorted_ext = np.sort(all_extremes)
+        i = 0
+        while i < len(sorted_ext):
+            anchor      = sorted_ext[i]
+            band_hi     = anchor * (1 + tolerance)
+
+            # Collect all values within the tolerance band
+            in_band = sorted_ext[
+                (sorted_ext >= anchor) & (sorted_ext <= band_hi)
+            ]
+            touch_count = len(in_band)
+
+            if touch_count >= 3:
+                cluster_price = float(np.mean(in_band))
+
+                # Skip if too close to session extreme (avoid duplicates)
+                near_high = (abs(cluster_price - session_high)
+                             / session_high) < tolerance
+                near_low  = (abs(cluster_price - session_low)
+                             / session_low) < tolerance
+
+                if not near_high and not near_low:
+                    levels.append((
+                        cluster_price, 'SR_CLUSTER', int(touch_count)
+                    ))
+
+            # Advance past all bars in this band
+            i += max(1, touch_count)
+
+        return levels
+
+    def _compute_clv(
+        self,
+        high:      float,
+        low:       float,
+        close:     float,
+        direction: int,
+    ) -> float:
+        """
+        Close Location Value.
+
+        LONG:  (close - low)  / (high - low)
+               1.0 = closed at candle high (maximum commitment)
+               0.0 = closed at candle low  (absorption / rejection)
+
+        SHORT: (high - close) / (high - low)
+               1.0 = closed at candle low  (maximum commitment)
+               0.0 = closed at candle high (absorption / rejection)
+
+        Returns 0.5 on degenerate (zero-range) candle.
+        """
+        candle_range = high - low
+        if candle_range <= 0:
+            return 0.5
+        if direction == LONG:
+            return float((close - low) / candle_range)
+        else:
+            return float((high - close) / candle_range)
+
+    def _compute_atr14(
+        self,
+        df:     pd.DataFrame,
+        period: int = 14,
+    ) -> Optional[float]:
+        """
+        Wilder's ATR14 — inline computation.
+
+        Uses exponential smoothing (alpha = 1/period) after
+        seeding with the simple mean of the first period TRs.
+
+        Does NOT depend on the features table ATR column —
+        keeps the engine self-contained and testable.
+
+        Returns current ATR value (float) or None if data
+        is insufficient or result is degenerate.
+        """
+        if len(df) < period + 2:
+            return None
+
+        high  = df['high'].values.astype(float)
+        low   = df['low'].values.astype(float)
+        close = df['close'].values.astype(float)
+
+        # True Range: max of three measures
+        hl  = high[1:]  - low[1:]
+        hpc = np.abs(high[1:]  - close[:-1])
+        lpc = np.abs(low[1:]   - close[:-1])
+        tr  = np.maximum(hl, np.maximum(hpc, lpc))
+
+        if len(tr) < period:
+            return None
+
+        # Seed with simple mean of first period TRs
+        atr_vals        = np.zeros(len(tr))
+        atr_vals[period - 1] = float(tr[:period].mean())
+
+        # Wilder's smoothing
+        alpha = 1.0 / period
+        for i in range(period, len(tr)):
+            atr_vals[i] = (
+                atr_vals[i - 1] * (1.0 - alpha)
+                + tr[i] * alpha
+            )
+
+        current_atr = atr_vals[-1]
+        if not np.isfinite(current_atr) or current_atr <= 0:
+            return None
+
+        return float(current_atr)
+
+
+# ── MODULE-LEVEL evaluate() WRAPPER ──────────────────────────────────────────
+# Mirrors the evaluate_v1 interface pattern used in xgb_signal_engine_ec2.py.
+# Instantiates a fresh FlowIgniteEngine per call — zero state overhead.
+
+def evaluate(
+    df_ohlcv:    pd.DataFrame,
+    df_features: Optional[pd.DataFrame] = None,
+    symbol:      str = None,
+    interval:    str = '15m',
+    config:      Optional[FlowConfig] = None,
+) -> Optional[FlowSignal]:
+    """
+    Module-level evaluate() — stateless convenience wrapper.
+
+    from core.strategy_core_flow import evaluate as evaluate_flow
+
+    Returns FlowSignal or None.
+    """
+    engine = FlowIgniteEngine(config=config)
+    return engine.evaluate(df_ohlcv, df_features, symbol, interval)

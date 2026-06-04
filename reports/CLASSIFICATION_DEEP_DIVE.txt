@@ -1,0 +1,127 @@
+====================================================================================================
+CLASSIFICATION LAYER FORENSICS - DEEP DIVE REPORT
+Generated: 2026-02-17T11:51:25.593206+00:00
+====================================================================================================
+
+1. CLASSIFICATION LOGIC SOURCE
+----------------------------------------------------------------------------------------------------
+
+Source File: signals/xgb_signal_engine_ec2.py
+Class: XGBSignalEngine
+Method: predict_signal() (lines 230-300)
+
+Classification Logic:
+  1. model.predict(X) → returns class (0 or 1)
+  2. model.predict_proba(X) → returns probability vector [p_sell, p_buy]
+  3. Map: 0=SELL (-1), 1=BUY (+1)
+  4. Confidence = max(proba vector)
+
+Model Type: XGBoost Binary Classifier
+Training: Binary classification with 0=SELL, 1=BUY
+
+2. RAW MODEL SCORE DISTRIBUTION
+----------------------------------------------------------------------------------------------------
+Signal     Count      Mean Conf    Min Conf     Max Conf    
+----------------------------------------------------------------------------------------------------
+BUY        252             0.6438       0.5005       0.9500
+SELL       0          (no data)
+NEUTRAL    248             0.6397       0.5003       0.9500
+
+3. THRESHOLD ARCHITECTURE
+----------------------------------------------------------------------------------------------------
+
+Current Implementation (from xgb_signal_engine_ec2.py):
+  
+  1. Binary Model Output:
+     prediction_mapped = model.predict(X)[0]  # Returns 0 or 1
+     prediction_proba = model.predict_proba(X)[0]  # Returns [p_sell, p_buy]
+  
+  2. Signal Mapping:
+     reverse_label_map = {0: -1, 1: 1}
+     signal = reverse_label_map[prediction_mapped]
+  
+  3. Confidence:
+     confidence = prediction_proba.max()
+  
+  4. Filtering in get_actionable_signals():
+     if signal != 0 and confidence >= Config.ML_SIGNAL_CONFIDENCE_MIN:
+        (Config.ML_SIGNAL_CONFIDENCE_MIN = 0.33)
+
+CRITICAL OBSERVATION:
+  The model is binary (trained with 0 and 1 classes).
+  But in production: model.predict() appears to only output 1.
+  This means either:
+    a) Training data was imbalanced (mostly BUY)
+    b) Model converged to always predict BUY
+    c) Decision boundary is >= 0.5 for p_buy (standard softmax threshold)
+
+4. THRESHOLD SENSITIVITY SIMULATION
+----------------------------------------------------------------------------------------------------
+Scenario: If NEUTRAL signals could become SELL
+
+Current NEUTRAL signals: 248
+NEUTRAL Confidence range: 0.5003 - 0.9500
+
+If confidence threshold >= 0.33: 248 would become SELL (100.0%)
+If confidence threshold >= 0.45: 248 would become SELL (100.0%)
+If confidence threshold >= 0.5: 248 would become SELL (100.0%)
+If confidence threshold >= 0.6: 111 would become SELL (44.8%)
+
+5. ROOT CAUSE HYPOTHESIS
+----------------------------------------------------------------------------------------------------
+CRITICAL: model.predict() NEVER returns class 0 (SELL)
+
+Current empirical output: Only BUY (1) or NEUTRAL (0 confidence filters)
+
+Root Cause Hypotheses:
+
+A) TRAINING DATA IMBALANCE
+   - Model trained on mostly BUY examples
+   - Decision boundary learned to always predict class 1
+   - SELL class is mathematically unreachable
+
+B) TRAINING DATA FILTERING
+   - SELL examples were dropped before training
+   - Model only saw BUY vs NEUTRAL
+
+C) LABEL MAPPING ERROR
+   - Target variable incorrectly mapped
+   - All SELL labels converted to BUY during preprocessing
+
+D) FEATURE DISTRIBUTION
+   - Feature space may not include bearish indicators
+   - Or bearish indicators are not being computed
+
+6. RECOMMENDED NEXT STEPS
+----------------------------------------------------------------------------------------------------
+
+To confirm root cause:
+
+1. Examine Training Data:
+   - Query database for training labels (2-3 months of data)
+   - Count: How many 1 (BUY) vs 0 (SELL)?
+   - If heavily imbalanced (>80% BUY), this is the cause
+   
+2. Examine Model Probabilities:
+   - Add logging to predict_proba() output
+   - Check: What is p_sell distribution?
+   - If p_sell always < 0.5, model is biased
+   
+3. Test Decision Boundary:
+   - Manually test model: model.predict([[features]])
+   - Create synthetic bearish features and test
+   - Verify: Does model ever output 0?
+   
+4. Check Feature Engineering:
+   - Verify bearish indicators are computed correctly
+   - Example: If close < EMA21, does feature capture this?
+   - Or are features losing polarity information?
+   
+5. Retrain with Balanced Data:
+   - Use class_weight='balanced' in XGBClassifier
+   - Or resample training data
+   - Force model to learn SELL as distinct class
+
+====================================================================================================
+END OF DEEP DIVE REPORT
+====================================================================================================

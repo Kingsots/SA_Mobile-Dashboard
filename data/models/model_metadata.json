@@ -1,0 +1,34 @@
+{
+  "version": "20260226_230057",
+  "metrics": {
+    "train_samples": 39417,
+    "test_samples": 9855,
+    "accuracy": 0.5137493658041603,
+    "precision": 0.2639384108641769,
+    "recall": 0.5137493658041603,
+    "f1_score": 0.34872141561421954,
+    "training_time": 0.3884108066558838,
+    "timestamp": "2026-02-26T23:00:57.442111"
+  },
+  "config": {
+    "n_estimators": 200,
+    "max_depth": 4,
+    "learning_rate": 0.05
+  },
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "ema_21",
+    "ema_100",
+    "rsi_14",
+    "obv",
+    "ad",
+    "vwap",
+    "vwap_slope",
+    "volume_sma_20",
+    "volume_ratio"
+  ]
+}
