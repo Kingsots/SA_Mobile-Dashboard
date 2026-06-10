@@ -1469,6 +1469,22 @@ body::before {
   color: var(--state-warn);
   font-weight: 700;
 }
+.vb-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  background: rgba(255, 183, 0, 0.12);
+  border: 1px solid rgba(255, 183, 0, 0.40);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.10em;
+  color: #FFB700;
+  text-transform: uppercase;
+  margin-left: 6px;
+  vertical-align: middle;
+}
 .pw-band-counts {
   display: flex;
   gap: 16px;
@@ -1701,6 +1717,404 @@ body::before {
 }
 .deep-mkt-key { color: var(--ink-3); }
 .deep-mkt-val { color: var(--ink); font-weight: 500; }
+.vol-metrics {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #1a1a1a;
+  border-radius: 6px;
+  display: none;
+}
+.vol-header {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #444;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+}
+.vol-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.vol-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vol-label {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: #444;
+  font-family: var(--font-mono);
+}
+.vol-value {
+  font-size: 13px;
+  color: #e0e0e0;
+  font-weight: 500;
+}
+.vol-surge-true  { color: #f5c518; }
+.vol-surge-false { color: #444; }
+.vol-div-true    { color: #ff5c5c; }
+    /* ── TICKER STRIP ─────────────────────────────── */
+    .ticker-strip {
+      overflow: hidden;
+      white-space: nowrap;
+      border-bottom: 1px solid var(--border);
+      height: 30px;
+      display: flex;
+      align-items: center;
+      background: var(--bg-surface, #111);
+      flex-shrink: 0;
+    }
+    .ticker-track {
+      display: inline-flex;
+      align-items: center;
+      animation: ticker-scroll 120s linear infinite;
+      will-change: transform;
+    }
+    .ticker-track:hover { animation-play-state: paused; }
+    @keyframes ticker-scroll {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+    .ticker-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 18px;
+      cursor: pointer;
+      border-right: 1px solid var(--border);
+      height: 30px;
+      flex-shrink: 0;
+    }
+    .ticker-item:hover .t-sym { color: var(--teal); }
+    .t-sym  { font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; color: #e0e0e0; }
+    .t-chg  { font-family: var(--font-mono); font-size: 10px; font-weight: 500; }
+    .t-chg.up   { color: var(--teal); }
+    .t-chg.down { color: var(--red);  }
+    .t-chg.flat { color: var(--ink-3, #666); }
+    /* ── DEEPVIEW HELPER CLASSES ───────────────────── */
+    .deep-section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.12em;
+      color: var(--ink-3);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+    }
+    .dv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border-faint);
+    }
+    .dv-key { font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); }
+    .dv-val { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+
+/* ── PILL SWITCHER (generic, used across multiple screens) ─── */
+.pill-row {
+  display: flex;
+  gap: 8px;
+  padding: 16px 0 12px 0;
+  flex-wrap: nowrap;
+}
+.pill {
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.pill.active {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: var(--bg);
+  font-weight: 600;
+}
+/* ── FLOW SCREEN ────────────────────────────────────────────── */
+.confirmed-summary-strip {
+  display: flex;
+  gap: 0;
+  margin: 16px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.confirmed-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 8px;
+  border-right: 1px solid var(--border);
+  gap: 4px;
+}
+.confirmed-stat:last-child { border-right: none; }
+.confirmed-stat-val {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.confirmed-stat-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.12em;
+}
+.confirmed-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  margin: 0 16px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.confirmed-card:active { border-color: var(--gold); }
+.confirmed-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.confirmed-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.confirmed-ticker {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.confirmed-dir {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.confirmed-outcome {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 2px 8px;
+  text-align: right;
+}
+.outcome-source-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--ink-3);
+  letter-spacing: 0.08em;
+  display: block;
+  margin-top: 2px;
+}
+.confirmed-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.confirmed-data-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.confirmed-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-3);
+  letter-spacing: 0.1em;
+}
+.confirmed-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+}
+.confirmed-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  border-top: 1px solid var(--border-faint);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+.confirmed-score-detail { color: var(--ink-3); }
+.flow-card {
+  margin: 0 16px 10px;
+  padding: 14px;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.flow-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.flow-ticker {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.flow-badge {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+}
+.flow-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--ink-2);
+}
+.flow-card-meta .label { color: var(--ink-3); }
+.funnel-row-tappable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.funnel-row-tappable:active {
+  background: var(--bg-subtle);
+}
+.funnel-count-active {
+  color: var(--gold);
+}
+.funnel-row-chevron {
+  color: var(--ink-3);
+  font-size: 18px;
+  margin-left: auto;
+  padding-left: 8px;
+}
+.funnel-candidate-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-faint);
+  cursor: pointer;
+}
+.funnel-candidate-row:last-child {
+  border-bottom: none;
+}
+.funnel-candidate-row:active {
+  background: var(--bg-subtle);
+}
+.funnel-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.funnel-ticker {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.funnel-dir {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.funnel-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.flow-funnel-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.flow-funnel-label { color: var(--ink-3); }
+.flow-funnel-val   { font-weight: 600; }
+.flow-metrics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  margin: 16px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.flow-metric-cell {
+  background: var(--surface);
+  padding: 12px;
+}
+.flow-metric-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.flow-metric-val {
+  font-family: var(--font-mono);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+/* ── FLOW DRAWER ────────────────────────────────────────────── */
+.flow-lifecycle-row {
+  display: flex;
+  gap: 10px;
+  padding: 7px 20px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+.flow-lifecycle-time { color: var(--ink-3); min-width: 80px; }
+.flow-lifecycle-state { flex: 1; }
+.flow-lifecycle-score { color: var(--ink-2); }
+.flow-entry-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 12px 20px;
+}
+.flow-entry-cell .flow-entry-label {
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.flow-entry-cell .flow-entry-val {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
 </style>
 <script>
     !function(t,e){var o,n,p,r;e.__SV||(window.posthog&&window.posthog.__loaded)||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="Mi Ri init Vi Gi Rr Wi Ji Bi capture calculateEventProperties tn register register_once register_for_session unregister unregister_for_session an getFeatureFlag getFeatureFlagPayload getFeatureFlagResult isFeatureEnabled reloadFeatureFlags updateFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey displaySurvey cancelPendingSurvey canRenderSurvey canRenderSurveyAsync un identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset setIdentity clearIdentity get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException addExceptionStep captureLog startExceptionAutocapture stopExceptionAutocapture loadToolbar get_property getSessionProperty nn Xi createPersonProfile setInternalOrTestUser sn Hi cn opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing get_explicit_consent_status is_capturing clear_opt_in_out_capturing Ki debug Lr rn getPageViewId captureTraceFeedback captureTraceMetric Di".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
@@ -1763,54 +2177,7 @@ body::before {
   <div id="screens">
 
     <!-- ── BOARD ──────────────────────────────────────── -->
-    <div class="screen" id="screen-pressure">
-  <div class="screen-header">
-    <div class="screen-header-top">
-      <span class="screen-eyebrow">── INTELLIGENCE</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>LIVE
-      </span>
-    </div>
-    <div class="screen-title">PRESSURE WATCH</div>
-    <div class="screen-meta" id="pw-meta">
-      Ranked by Expansion Readiness
-    </div>
-  </div>
-
-    <!-- Summary strip -->
-    <div class="pw-summary-strip">
-      <div class="pw-summary-cell">
-        <span class="pw-count" id="pw-count-extreme">—</span>
-        <span class="pw-label">EXTREME</span>
-      </div>
-      <div class="pw-summary-cell">
-        <span class="pw-count" id="pw-count-high">—</span>
-        <span class="pw-label">HIGH</span>
-      </div>
-      <div class="pw-summary-cell">
-        <span class="pw-count" id="pw-count-rising">—</span>
-        <span class="pw-label">RISING</span>
-      </div>
-      <div class="pw-summary-cell">
-        <span class="pw-count" id="pw-count-low">—</span>
-        <span class="pw-label">LOW</span>
-      </div>
-    </div>
-
-    <!-- Filter pills -->
-    <div class="pw-filters">
-      <button class="pw-pill active" data-filter="ALL">ALL</button>
-      <button class="pw-pill" data-filter="EXTREME">EXTREME</button>
-      <button class="pw-pill" data-filter="HIGH">HIGH</button>
-      <button class="pw-pill" data-filter="RISING">RISING</button>
-      <button class="pw-pill" data-filter="LOW">LOW</button>
-    </div>
-
-    <!-- Card list -->
-    <div id="pw-list"></div>
-  </div>
-
-  <!-- DeepView Drawer -->
+  <!-- DeepView Drawer (Pressure Watch context) -->
   <div id="deepview-drawer" class="deepview-drawer deepview-drawer--closed">
     <div class="deepview-header">
       <div class="deepview-title-row">
@@ -1829,17 +2196,26 @@ body::before {
        onclick="toggleDeepView()"></div>
 
   <div class="screen active" id="screen-board">
+  <!-- TICKER STRIP -->
+  <div class="ticker-strip" id="ticker-strip" aria-label="Asset price ticker">
+    <div class="ticker-track" id="ticker-track"></div>
+  </div>
   <div class="screen-header">
     <div class="screen-header-top">
       <span class="screen-eyebrow">── INTELLIGENCE</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>LIVE
-      </span>
     </div>
     <div class="screen-title">MARKET STATE</div>
     <div class="screen-meta" id="board-meta">LOADING…</div>
   </div>
 
+  <div class="pill-row">
+    <button class="pill active" data-board-view="state"
+            onclick="switchBoardView('state')">STATE</button>
+    <button class="pill" data-board-view="pressure"
+            onclick="switchBoardView('pressure')">PRESSURE</button>
+  </div>
+
+  <div id="board-state-view">
       <!-- Resolver Strip -->
       <div id="resolver-strip">
         <div class="loading-row"><div class="spinner"></div>Loading feed…</div>
@@ -1884,16 +2260,48 @@ body::before {
       </div>
 
       <div class="footer-cap">— End of Board —</div>
+  </div><!-- /board-state-view -->
+
+  <div id="board-pressure-view" style="display:none">
+    <!-- Summary strip -->
+    <div class="pw-summary-strip">
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-extreme">—</span>
+        <span class="pw-label">EXTREME</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-high">—</span>
+        <span class="pw-label">HIGH</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-rising">—</span>
+        <span class="pw-label">RISING</span>
+      </div>
+      <div class="pw-summary-cell">
+        <span class="pw-count" id="pw-count-low">—</span>
+        <span class="pw-label">LOW</span>
+      </div>
     </div>
+
+    <!-- Filter pills -->
+    <div class="pw-filters">
+      <button class="pw-pill active" data-filter="ALL">ALL</button>
+      <button class="pw-pill" data-filter="EXTREME">EXTREME</button>
+      <button class="pw-pill" data-filter="HIGH">HIGH</button>
+      <button class="pw-pill" data-filter="RISING">RISING</button>
+      <button class="pw-pill" data-filter="LOW">LOW</button>
+    </div>
+
+    <!-- Card list -->
+    <div id="pw-list"></div>
+  </div><!-- /board-pressure-view -->
+    </div><!-- /screen-board -->
 
     <!-- ── PULSE ──────────────────────────────────────────── -->
     <div class="screen" id="screen-pulse">
   <div class="screen-header">
     <div class="screen-header-top">
       <span class="screen-eyebrow">── INTELLIGENCE</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>LIVE
-      </span>
     </div>
     <div class="screen-title">PULSE</div>
     <div class="screen-meta" id="pulse-meta">
@@ -1924,9 +2332,6 @@ body::before {
   <div class="screen-header">
     <div class="screen-header-top">
       <span class="screen-eyebrow">── INTELLIGENCE</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>LIVE
-      </span>
     </div>
     <div class="screen-title">RIFT</div>
     <div class="screen-meta" id="rift-meta">
@@ -1952,14 +2357,74 @@ body::before {
       <div class="footer-cap" id="rift-footer">— End of Rift Log —</div>
     </div>
 
+    <!-- ── FLOW ───────────────────────────────────────────── -->
+    <div class="screen" id="screen-flow">
+  <div class="screen-header">
+    <div class="screen-header-top">
+    </div>
+    <div class="screen-title">FLOW ENGINE</div>
+    <div class="screen-meta">Live candidate pipeline</div>
+  </div>
+  <div class="pill-row">
+    <button class="pill active" data-flow-view="candidates"
+            onclick="switchFlowView('candidates')">CANDIDATES</button>
+    <button class="pill" data-flow-view="confirmed"
+            onclick="switchFlowView('confirmed')">CONFIRMED</button>
+    <button class="pill" data-flow-view="aggregate"
+            onclick="switchFlowView('aggregate')">AGGREGATE</button>
+  </div>
+  <div id="flow-candidates-view">
+    <div id="flow-candidates-list">
+      <div class="loading-row"><div class="spinner"></div>Loading candidates…</div>
+    </div>
+  </div>
+  <div id="flow-confirmed-view" style="display:none">
+    <div id="flow-confirmed-list">
+      <p class="loading-text">Loading confirmed plays...</p>
+    </div>
+  </div>
+  <div id="flow-aggregate-view" style="display:none">
+    <div id="flow-aggregate-content">
+      <div class="loading-row"><div class="spinner"></div>Loading aggregate…</div>
+    </div>
+  </div>
+    </div>
+
+    <!-- ── SIGNALS ────────────────────────────────────────── -->
+    <div class="screen" id="screen-signals">
+  <div class="screen-header">
+    <div class="screen-header-top">
+      <span class="screen-eyebrow">── EXECUTION</span>
+    </div>
+    <div class="screen-title">SIGNALS</div>
+    <div class="screen-meta" id="signals-meta">ALL TIME · LOADING…</div>
+  </div>
+  <div class="pill-row">
+    <button class="pill active" data-engine="pulse"
+            onclick="switchSignalEngine('pulse')">PULSE</button>
+    <button class="pill" data-engine="rift"
+            onclick="switchSignalEngine('rift')">RIFT</button>
+  </div>
+  <div id="signals-stats" class="stats-grid">
+    <div class="stat-cell"><div class="stat-val" id="stat-signals-winrate">—</div><div class="stat-label">Outcome Rate</div></div>
+    <div class="stat-cell"><div class="stat-val" id="stat-signals-pnl" style="color:var(--teal)">—</div><div class="stat-label">Movement Capture</div></div>
+    <div class="stat-cell"><div class="stat-val" id="stat-signals-count">—</div><div class="stat-label">Events</div></div>
+    <div class="stat-cell"><div class="stat-val" id="stat-signals-rr">—</div><div class="stat-label">Avg R:R</div></div>
+  </div>
+  <div class="signal-section-label">ACTIVE</div>
+  <div id="signals-active">
+    <div class="loading-row"><div class="spinner"></div>Loading…</div>
+  </div>
+  <div class="signal-section-label" style="margin-top:12px">CLOSED</div>
+  <div id="signals-closed"></div>
+  <div class="footer-cap" id="signals-footer">— End of Signal Log —</div>
+    </div>
+
     <!-- ── WATCHLIST ──────────────────────────────────────── -->
     <div class="screen" id="screen-watch">
   <div class="screen-header">
     <div class="screen-header-top">
-      <span class="screen-eyebrow">── INTELLIGENCE</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>LIVE
-      </span>
+      <span class="screen-eyebrow">── WATCHLIST</span>
     </div>
     <div class="screen-title">WATCHLIST</div>
     <div class="screen-meta" id="watch-meta">
@@ -1967,6 +2432,14 @@ body::before {
     </div>
   </div>
 
+  <div class="pill-row">
+    <button class="pill active" data-watch-view="signals"
+            onclick="switchWatchView('signals')">SIGNALS</button>
+    <button class="pill" data-watch-view="flow"
+            onclick="switchWatchView('flow')">FLOW</button>
+  </div>
+
+  <div id="watch-signals-view">
       <div class="search-wrap">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
         <input type="text" placeholder="Search assets…" id="search-input" oninput="filterWatchlist(this.value)">
@@ -1977,18 +2450,19 @@ body::before {
       </div>
 
       <div class="footer-cap" id="watch-footer">— 0 Assets Tracked —</div>
+  </div><!-- /watch-signals-view -->
+
+  <div id="watch-flow-view" style="display:none">
+    <div id="flow-watchlist-list">
+      <div class="loading-row"><div class="spinner"></div>Loading flow candidates…</div>
+    </div>
+  </div>
     </div>
 
     <!-- ── INTELLIGENCE FEED ────────────────────────────── -->
     <!-- ── PROFILE ──────────────────────────────────────── -->
     <div class="screen" id="screen-profile">
   <div class="screen-header">
-    <div class="screen-header-top">
-      <span class="screen-eyebrow">── OPTICORE LABS</span>
-      <span class="live-indicator">
-        <span class="live-dot"></span>SA·3
-      </span>
-    </div>
     <div class="screen-title">PROFILE</div>
     <div class="screen-meta" id="prof-header-engine">
       Intelligence Terminal
@@ -2112,33 +2586,25 @@ body::before {
       <span class="nav-label">Market State</span>
     </button>
 
-    <button class="nav-tab" data-screen="pressure"
-            onclick="goTo('pressure', this)">
+    <button class="nav-tab" data-screen="flow"
+            onclick="goTo('flow', this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="1.8">
-        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83
-                 M16.24 16.24l2.83 2.83M2 12h4M18 12h4
-                 M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        <path d="M5 12h14M12 5l7 7-7 7"/>
+        <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/>
+        <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>
       </svg>
-      <span class="nav-label">Pressure</span>
+      <span class="nav-label">Flow</span>
     </button>
 
-    <button class="nav-tab" data-screen="pulse"
-            onclick="goTo('pulse', this)">
+    <button class="nav-tab" data-screen="signals"
+            onclick="goTo('signals', this)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="1.8">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
       </svg>
-      <span class="nav-label">Pulse</span>
-    </button>
-
-    <button class="nav-tab" data-screen="rift"
-            onclick="goTo('rift', this)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="1.8">
-        <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-      </svg>
-      <span class="nav-label">Rift</span>
+      <span class="nav-label">Signals</span>
     </button>
 
     <button class="nav-tab" data-screen="watch"
@@ -2311,8 +2777,30 @@ body::before {
     <div class="deep-reading-result" id="deep-reading-result">
       <div class="deep-reading-disclaimer">── Contextual Reading &nbsp;·&nbsp; Observational analysis only. Not financial advice.</div>
       <div class="deep-reading-body" id="deep-reading-body"></div>
+      <div class="vol-metrics" id="vol-metrics-block">
+        <div class="vol-header">VOLUME INTELLIGENCE</div>
+        <div class="vol-grid">
+          <div class="vol-item">
+            <span class="vol-label">RVOL</span>
+            <span class="vol-value" id="vol-rvol">—</span>
+          </div>
+          <div class="vol-item">
+            <span class="vol-label">TREND</span>
+            <span class="vol-value" id="vol-trend">—</span>
+          </div>
+          <div class="vol-item">
+            <span class="vol-label">SURGE</span>
+            <span class="vol-value" id="vol-surge">—</span>
+          </div>
+          <div class="vol-item">
+            <span class="vol-label">DIVERGENCE</span>
+            <span class="vol-value" id="vol-divergence">—</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
+  <div id="deep-extra-sections" style="display:none;padding:0 20px 16px"></div>
 
 </div>
 
@@ -2329,6 +2817,35 @@ body::before {
   <div class="state-detail-list" id="state-detail-list"></div>
 </div>
 
+<div class="drawer" id="drawer-flow">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div>
+      <div style="font-family:var(--font-mono);font-size:10px;color:var(--ink-3);letter-spacing:2px;text-transform:uppercase;margin-bottom:4px">FLOW ENGINE</div>
+      <div class="drawer-title" id="flow-drawer-title">—</div>
+    </div>
+    <button class="drawer-close" onclick="closeFlowDrawer()">×</button>
+  </div>
+  <div id="flow-drawer-body" style="padding:0 0 40px">
+    <div class="loading-row"><div class="spinner"></div>Loading…</div>
+  </div>
+</div>
+
+<div id="drawer-funnel" class="drawer">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div>
+      <div class="drawer-eyebrow">FLOW ENGINE</div>
+      <h2 id="funnel-drawer-title" class="drawer-title">DETECTED</h2>
+      <div id="funnel-drawer-subtitle" class="drawer-subtitle">— candidates</div>
+    </div>
+    <button class="drawer-close" onclick="closeFunnelDrawer()">×</button>
+  </div>
+  <div id="funnel-drawer-content">
+    <p class="loading-text">Loading...</p>
+  </div>
+</div>
+
 <script src="api.js"></script>
 <script>
 // ── CONFIG ────────────────────────────────────────────────────
@@ -2343,6 +2860,539 @@ let CODE = (window.SA_API && typeof window.SA_API.getStoredCode === 'function')
   : (localStorage.getItem('sa_code') || '');
 let currentScreen = 'board';
 let currentFilter = 'ALL';
+let currentSignalEngine = 'pulse';
+let currentFlowView = 'candidates';
+let currentBoardView = 'state';
+let currentWatchView = 'signals';
+
+function switchBoardView(view) {
+  currentBoardView = view;
+  document.querySelectorAll('[data-board-view]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.boardView === view);
+  });
+  const sv = document.getElementById('board-state-view');
+  const pv = document.getElementById('board-pressure-view');
+  if (sv) sv.style.display = view === 'state' ? 'block' : 'none';
+  if (pv) pv.style.display = view === 'pressure' ? 'block' : 'none';
+  if (view === 'pressure') loadPressureWatch();
+}
+
+function switchFlowView(view) {
+  currentFlowView = view;
+  document.querySelectorAll('[data-flow-view]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.flowView === view);
+  });
+  const cv  = document.getElementById('flow-candidates-view');
+  const cfv = document.getElementById('flow-confirmed-view');
+  const av  = document.getElementById('flow-aggregate-view');
+  if (cv)  cv.style.display  = view === 'candidates' ? 'block' : 'none';
+  if (cfv) cfv.style.display = view === 'confirmed'  ? 'block' : 'none';
+  if (av)  av.style.display  = view === 'aggregate'  ? 'block' : 'none';
+  if (view === 'candidates') loadFlowCandidates();
+  if (view === 'confirmed')  loadFlowConfirmed();
+  if (view === 'aggregate')  loadFlowAggregate();
+}
+
+function switchSignalEngine(engine) {
+  currentSignalEngine = engine;
+  document.querySelectorAll('[data-engine]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.engine === engine);
+  });
+  loadSignals(engine);
+}
+
+function switchWatchView(view) {
+  currentWatchView = view;
+  document.querySelectorAll('[data-watch-view]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.watchView === view);
+  });
+  const sv = document.getElementById('watch-signals-view');
+  const fv = document.getElementById('watch-flow-view');
+  if (sv) sv.style.display = view === 'signals' ? 'block' : 'none';
+  if (fv) fv.style.display = view === 'flow' ? 'block' : 'none';
+  if (view === 'flow') loadFlowWatchlist();
+}
+
+function loadFlow() {
+  if (currentFlowView === 'candidates') loadFlowCandidates();
+  if (currentFlowView === 'aggregate')  loadFlowAggregate();
+}
+
+function formatFlowDate(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso.replace(' ', 'T') + (iso.includes('+') ? '' : 'Z'));
+    const mo = d.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' });
+    const dy = String(d.getUTCDate()).padStart(2, '0');
+    const hr = String(d.getUTCHours()).padStart(2, '0');
+    const mn = String(d.getUTCMinutes()).padStart(2, '0');
+    return `${mo} ${dy} ${hr}:${mn}`;
+  } catch(e) { return iso.slice(0, 16); }
+}
+
+function flowStateBadgeColor(state) {
+  if (state === 'ACCEPTANCE_BUILDING' || state === 'ACCEPTANCE_CONFIRMED') return 'var(--teal)';
+  if (state === 'SWEEP_FOUND' || state === 'RETEST_PENDING') return 'var(--gold)';
+  return 'var(--ink-3)';
+}
+
+function buildFlowCard(c) {
+  const dirColor   = c.direction === 'LONG' ? 'var(--teal)' : 'var(--red)';
+  const stateColor = flowStateBadgeColor(c.state);
+
+  const stateLabel = (c.state || '').replace(/_/g, ' ');
+  const detStr   = formatFlowDate(c.detected_at);
+  const sweepStr = c.sweep_candle_time ? formatFlowDate(c.sweep_candle_time) : '—';
+  const confStr  = c.confirmed_at ? formatFlowDate(c.confirmed_at) : '—';
+
+  const entryStr = c.entry_price  ? formatPrice(c.entry_price)  : '—';
+  const slStr    = c.sl_price     ? formatPrice(c.sl_price)     : '—';
+  const tpStr    = c.tp_target    ? formatPrice(c.tp_target)    : '—';
+  const scoreStr = c.current_score != null ? Math.round(c.current_score) : '—';
+
+  // Only show trading outcomes for plays that actually entered (have entry_price)
+  const isConfirmedPlay = c.entry_price != null;
+  const showOutcome = c.outcome && (
+    c.state === 'ACCEPTANCE_CONFIRMED' ||
+    (c.state === 'EXPIRED' && isConfirmedPlay && c.outcome !== 'RUNNING')
+  );
+  const showRunning = c.outcome === 'RUNNING' && isConfirmedPlay
+    && c.state === 'ACCEPTANCE_CONFIRMED';
+  let outcomeBadge = '';
+  if (showOutcome || showRunning) {
+    const oc = c.outcome === 'TP_HIT'  ? { label: 'TP HIT',  color: 'var(--teal)' }
+             : c.outcome === 'SL_HIT'  ? { label: 'SL HIT',  color: 'var(--red)'  }
+             : c.outcome === 'EXPIRY'  ? { label: 'EXPIRY',   color: 'var(--ink-3)'}
+             :                          { label: 'RUNNING',   color: 'var(--gold)' };
+    outcomeBadge = `<span class="flow-badge" style="color:${oc.color};border-color:${oc.color}">${oc.label}</span>`;
+  } else if (c.state === 'EXPIRED' && !c.outcome && c.expiry_reason) {
+    outcomeBadge = `<span class="flow-badge" style="color:var(--ink-3);border-color:var(--ink-3)">${c.expiry_reason}</span>`;
+  }
+
+  return `<div class="flow-card" onclick="openFlowDrawer(${c.id})">
+  <div class="flow-card-header">
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="flow-ticker">${c.ticker}</span>
+      <span class="flow-badge" style="color:${dirColor};border-color:${dirColor}">${c.direction}</span>
+    </div>
+    <span class="flow-badge" style="color:${stateColor};border-color:${stateColor}">${stateLabel}</span>
+  </div>
+  <div class="flow-card-meta">
+    <div><span class="label">Detected</span> ${detStr}</div>
+    <div><span class="label">Score</span> ${scoreStr}</div>
+    <div><span class="label">Sweep</span> ${sweepStr}</div>
+    <div><span class="label">Type</span> ${c.sweep_type || '—'}</div>
+    <div><span class="label">Confirmed</span> ${confStr}</div>
+    <div><span class="label">Entry</span> ${entryStr}</div>
+    <div><span class="label">SL</span> ${slStr}</div>
+    <div><span class="label">TP</span> ${tpStr}</div>
+  </div>
+  ${outcomeBadge ? `<div style="margin-top:6px">${outcomeBadge}</div>` : ''}
+</div>`;
+}
+
+async function loadFlowCandidates() {
+  const el = document.getElementById('flow-candidates-list');
+  if (!el) return;
+  el.innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading candidates…</div>';
+  try {
+    const res = await window.SA_API.request('/flow/candidates');
+    if (!res.ok) throw res;
+    const { candidates } = res.data;
+    if (!candidates || candidates.length === 0) {
+      el.innerHTML = '<div class="empty-state">No candidates in pipeline.</div>';
+      return;
+    }
+    el.innerHTML = candidates.map(c => buildFlowCard(c)).join('');
+  } catch(e) {
+    console.error('[FLOW] loadFlowCandidates error', e);
+    el.innerHTML = '<div class="empty-state">Failed to load candidates.</div>';
+  }
+}
+
+function buildFunnelRow(apiState, label, count, extraStyle, valColor) {
+  const tappable = count > 0;
+  const chevron  = tappable ? '<span class="funnel-row-chevron">›</span>' : '';
+  const rowClass = tappable ? 'flow-funnel-row funnel-row-tappable' : 'flow-funnel-row';
+  const tap      = tappable ? ` onclick="openFunnelDrawer('${apiState}', ${count})"` : '';
+  const style    = extraStyle ? ` style="${extraStyle}"` : '';
+  const numColor = valColor ? ` style="color:${valColor}"` : '';
+  const numClass = tappable ? 'flow-funnel-val funnel-count-active' : 'flow-funnel-val';
+  return `<div class="${rowClass}"${tap}${style}>`
+    + `<span class="flow-funnel-label">${label}</span>`
+    + `<span class="${numClass}"${numColor}>${count}</span>`
+    + `${chevron}</div>`;
+}
+
+async function loadFlowAggregate() {
+  const el = document.getElementById('flow-aggregate-content');
+  if (!el) return;
+  el.innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading aggregate…</div>';
+  try {
+    const res = await window.SA_API.request('/flow/aggregate');
+    if (!res.ok) throw res;
+    const d = res.data;
+    const f = d.funnel || {};
+    const o = d.outcomes || {};
+    const m = d.metrics || {};
+
+    const winRateTxt = m.win_rate_pct != null
+      ? m.win_rate_pct + '%'
+      : '— Insuff. data';
+    const confirmTxt = m.confirmation_rate_pct != null
+      ? m.confirmation_rate_pct + '%' : '—';
+    const confirmTimeTxt = m.avg_time_to_confirm_hours != null
+      ? m.avg_time_to_confirm_hours + 'H' : '—';
+    const everConfirmedTxt = d.ever_confirmed != null ? d.ever_confirmed : '—';
+
+    el.innerHTML = `
+<div style="padding:14px 16px 6px;font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;color:var(--ink-3)">FLOW FUNNEL</div>
+${buildFunnelRow('DETECTED', 'DETECTED', f.DETECTED || 0)}
+${buildFunnelRow('SWEEP_FOUND', 'SWEEP FOUND', f.SWEEP_FOUND || 0)}
+${buildFunnelRow('RETEST_PENDING', 'RETEST PENDING', f.RETEST_PENDING || 0)}
+${buildFunnelRow('ACCEPTANCE_BUILDING', 'ACCEPTANCE BUILDING', f.ACCEPTANCE_BUILDING || 0, '', 'var(--teal)')}
+${buildFunnelRow('ACCEPTANCE_CONFIRMED', 'CONFIRMED', f.ACCEPTANCE_CONFIRMED || 0, 'border-bottom:2px solid var(--border)', 'var(--teal)')}
+${buildFunnelRow('EXPIRED', 'EXPIRED', f.EXPIRED || 0, '', 'var(--ink-3)')}
+<div style="padding:14px 16px 6px;font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;color:var(--ink-3);margin-top:6px">OUTCOMES</div>
+<div class="flow-funnel-row"><span class="flow-funnel-label">TP HIT</span><span class="flow-funnel-val" style="color:var(--teal)">${o.TP_HIT || 0}</span></div>
+<div class="flow-funnel-row"><span class="flow-funnel-label">SL HIT</span><span class="flow-funnel-val" style="color:var(--red)">${o.SL_HIT || 0}</span></div>
+<div class="flow-funnel-row"><span class="flow-funnel-label">RUNNING</span><span class="flow-funnel-val" style="color:var(--gold)">${o.RUNNING || 0}</span></div>
+<div style="padding:14px 16px 6px;font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;color:var(--ink-3);margin-top:6px">METRICS</div>
+<div class="flow-metrics-grid">
+  <div class="flow-metric-cell"><div class="flow-metric-label">CONFIRMATION</div><div class="flow-metric-val" style="color:var(--teal)">${confirmTxt}</div></div>
+  <div class="flow-metric-cell"><div class="flow-metric-label">WIN RATE</div><div class="flow-metric-val" style="color:var(--teal)">${winRateTxt}</div></div>
+  <div class="flow-metric-cell"><div class="flow-metric-label">AVG CONFIRM TIME</div><div class="flow-metric-val">${confirmTimeTxt}</div></div>
+  <div class="flow-metric-cell"><div class="flow-metric-label">EVER CONFIRMED</div><div class="flow-metric-val" style="color:var(--teal)">${everConfirmedTxt}</div></div>
+  <div class="flow-metric-cell"><div class="flow-metric-label">RESOLVED</div><div class="flow-metric-val">${m.resolved_count || 0}</div></div>
+  <div class="flow-metric-cell"><div class="flow-metric-label">RUNNING</div><div class="flow-metric-val" style="color:var(--gold)">${o.RUNNING || 0}</div></div>
+</div>`;
+  } catch(e) {
+    console.error('[FLOW] loadFlowAggregate error', e);
+    el.innerHTML = '<div class="empty-state">Failed to load aggregate.</div>';
+  }
+}
+
+function loadFlowConfirmed() {
+  const el = document.getElementById('flow-confirmed-list');
+  el.innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+  window.SA_API.request('/flow/confirmed')
+    .then(res => {
+      if (!res.ok) throw res;
+      const data = res.data;
+      if (!data.confirmed_plays || data.confirmed_plays.length === 0) {
+        el.innerHTML = '<p class="empty-state">No confirmed plays yet.</p>';
+        return;
+      }
+      const s = data.summary;
+      const wrDisplay = s.win_rate_pct != null
+        ? s.win_rate_pct.toFixed(1) + '%' : '— Insuff. data';
+      el.innerHTML = `
+        <div class="confirmed-summary-strip">
+          <div class="confirmed-stat">
+            <span class="confirmed-stat-val">${data.total}</span>
+            <span class="confirmed-stat-label">PLAYS</span>
+          </div>
+          <div class="confirmed-stat">
+            <span class="confirmed-stat-val" style="color:var(--teal)">${s.tp_hit}</span>
+            <span class="confirmed-stat-label">TP HIT</span>
+          </div>
+          <div class="confirmed-stat">
+            <span class="confirmed-stat-val" style="color:var(--red)">${s.sl_hit}</span>
+            <span class="confirmed-stat-label">SL HIT</span>
+          </div>
+          <div class="confirmed-stat">
+            <span class="confirmed-stat-val" style="color:var(--gold)">${wrDisplay}</span>
+            <span class="confirmed-stat-label">WIN RATE</span>
+          </div>
+        </div>
+        ${data.confirmed_plays.map(c => buildConfirmedCard(c)).join('')}
+      `;
+    })
+    .catch(() => {
+      el.innerHTML = '<p class="error-state">Failed to load confirmed plays.</p>';
+    });
+}
+
+function buildConfirmedCard(c) {
+  const dirColor = c.direction === 'LONG' ? 'var(--teal)' : 'var(--red)';
+  const outcomeColor = c.outcome === 'TP_HIT' ? 'var(--teal)'
+    : c.outcome === 'SL_HIT' ? 'var(--red)' : 'var(--gold)';
+  const outcomeLabel = c.outcome ? c.outcome.replace(/_/g, ' ') : 'RUNNING';
+  const sourceLabel  = c.outcome_source === 'SIGNAL' ? 'SIGNAL-DERIVED' : null;
+  const scoreDetail = [
+    c.score_body    != null ? `Body: ${c.score_body}pts`       : null,
+    c.score_cascade != null ? `Cascade: ${c.score_cascade}pts` : null,
+    c.score_rsi     != null ? `RSI: ${c.score_rsi}pts`         : null,
+    c.sweep_bonus   != null && c.sweep_bonus > 0
+      ? `Bonus: +${c.sweep_bonus}pts` : null
+  ].filter(Boolean).join(' · ');
+  let timeToConfirm = '—';
+  if (c.detected_at && c.confirmed_at) {
+    const hrs = ((new Date(c.confirmed_at) - new Date(c.detected_at)) / 3600000).toFixed(1);
+    timeToConfirm = hrs + 'H';
+  }
+  const confDate = c.confirmed_at
+    ? c.confirmed_at.replace('T', ' ').slice(0, 16) : '—';
+  const sweepInfo = c.sweep_type
+    ? `${c.sweep_type.replace('_SWEEP', '')} · ${
+        c.sweep_wick_depth_pct != null ? c.sweep_wick_depth_pct.toFixed(2)+'%' : '—'
+      } · Vol ${
+        c.sweep_volume_ratio != null ? c.sweep_volume_ratio.toFixed(2)+'x' : '—'
+      }` : '—';
+  return `
+    <div class="confirmed-card" onclick="openFlowDrawer(${c.id})">
+      <div class="confirmed-card-header">
+        <div class="confirmed-card-title">
+          <span class="confirmed-ticker">${c.ticker}</span>
+          <span class="confirmed-dir" style="color:${dirColor}">${c.direction}</span>
+        </div>
+        <span class="confirmed-outcome"
+              style="color:${outcomeColor};border-color:${outcomeColor}">
+          ${outcomeLabel}
+          ${sourceLabel ? `<span class="outcome-source-label">${sourceLabel}</span>` : ''}
+        </span>
+      </div>
+      <div class="confirmed-card-grid">
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">SCORE</span>
+          <span class="confirmed-val">${c.current_score}pts</span>
+        </div>
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">CONFIRMED</span>
+          <span class="confirmed-val">${confDate}</span>
+        </div>
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">ENTRY</span>
+          <span class="confirmed-val">${c.entry_price ?? '—'}</span>
+        </div>
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">SL</span>
+          <span class="confirmed-val" style="color:var(--red)">${c.sl_price ?? '—'}</span>
+        </div>
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">TP</span>
+          <span class="confirmed-val" style="color:var(--teal)">${c.tp_target ?? '—'}</span>
+        </div>
+        <div class="confirmed-data-cell">
+          <span class="confirmed-label">RESOLVED</span>
+          <span class="confirmed-val">${c.flow_resolved_at
+            ? c.flow_resolved_at.slice(0,16).replace('T',' ')
+            : '—'}</span>
+        </div>
+      </div>
+      <div class="confirmed-card-meta">
+        <span>${sweepInfo}</span>
+        ${scoreDetail ? `<span class="confirmed-score-detail">${scoreDetail}</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function buildFlowWatchCard(c) {
+  const dirColor   = c.direction === 'LONG' ? 'var(--teal)' : 'var(--red)';
+  const stateColor = flowStateBadgeColor(c.state);
+  const stateLabel = (c.state || '').replace(/_/g, ' ');
+  const ageStr  = c.age_hours != null ? c.age_hours + 'h' : '—';
+  const scoreStr = c.current_score != null ? Math.round(c.current_score) : '—';
+  return `<div class="flow-card" onclick="openFlowDrawer(${c.id})" style="padding:10px 14px">
+  <div class="flow-card-header" style="margin-bottom:4px">
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="flow-ticker">${c.ticker}</span>
+      <span class="flow-badge" style="color:${dirColor};border-color:${dirColor}">${c.direction}</span>
+    </div>
+    <span class="flow-badge" style="color:${stateColor};border-color:${stateColor}">${stateLabel}</span>
+  </div>
+  <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--ink-3)">
+    Score: ${scoreStr} · Age: ${ageStr} · ${c.sweep_type || 'NO SWEEP'}
+  </div>
+</div>`;
+}
+
+async function loadFlowWatchlist() {
+  const el = document.getElementById('flow-watchlist-list');
+  if (!el) return;
+  el.innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading flow candidates…</div>';
+  try {
+    const res = await window.SA_API.request('/flow/watchlist');
+    if (!res.ok) throw res;
+    const { open_candidates } = res.data;
+    if (!open_candidates || open_candidates.length === 0) {
+      el.innerHTML = '<div class="empty-state">No open flow candidates.</div>';
+      return;
+    }
+    el.innerHTML = open_candidates.map(c => buildFlowWatchCard(c)).join('');
+  } catch(e) {
+    console.error('[FLOW] loadFlowWatchlist error', e);
+    el.innerHTML = '<div class="empty-state">Failed to load flow candidates.</div>';
+  }
+}
+
+async function openFlowDrawer(candidateId) {
+  const drawer  = document.getElementById('drawer-flow');
+  const overlay = document.getElementById('overlay');
+  const titleEl = document.getElementById('flow-drawer-title');
+  const bodyEl  = document.getElementById('flow-drawer-body');
+  if (!drawer) return;
+
+  titleEl.textContent = 'Loading…';
+  bodyEl.innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+  drawer.classList.add('open');
+  if (overlay) overlay.classList.add('open');
+
+  try {
+    const res = await window.SA_API.request('/flow/candidate/' + candidateId + '/log');
+    if (!res.ok) throw res;
+    const d = res.data;
+    titleEl.textContent = (d.ticker || '—') + ' · ' + (d.direction || '—');
+
+    // Get candidate detail from cache or re-fetch
+    let cand = null;
+    try {
+      const cr = await window.SA_API.request('/flow/candidates?limit=200');
+      if (cr.ok) cand = (cr.data.candidates || []).find(c => c.id === candidateId);
+    } catch(e2) {}
+
+    const transitions = d.transitions || [];
+    const stateRows = transitions.map(t => {
+      const timeStr = formatFlowDate(t.eval_time);
+      const score   = t.score_at_transition != null
+        ? Math.round(t.score_at_transition) + 'pts' : '';
+      const arrow = t.from_state === 'NONE' ? '' : '→ ';
+      return `<div class="flow-lifecycle-row">
+  <span class="flow-lifecycle-time">${timeStr}</span>
+  <span class="flow-lifecycle-state">${arrow}${(t.to_state || '').replace(/_/g,' ')}</span>
+  <span class="flow-lifecycle-score">${score}</span>
+</div>`;
+    }).join('');
+
+    let entryBlock = '';
+    if (cand && (cand.entry_price || cand.sl_price || cand.tp_target)) {
+      const bodyPts    = cand.score_body     != null ? cand.score_body     : '—';
+      const cascadePts = cand.score_cascade  != null ? cand.score_cascade  : '—';
+      const rsiPts     = cand.score_rsi      != null ? cand.score_rsi      : '—';
+      const bonusPts   = cand.sweep_bonus    != null ? cand.sweep_bonus    : '—';
+      const depthStr   = cand.sweep_wick_depth_pct != null
+        ? cand.sweep_wick_depth_pct.toFixed(2) + '%' : '—';
+      const volStr     = cand.sweep_volume_ratio   != null
+        ? cand.sweep_volume_ratio.toFixed(2) + 'x' : '—';
+
+      entryBlock = `<div style="padding:12px 20px 0;font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;color:var(--ink-3)">ENTRY PARAMETERS</div>
+<div class="flow-entry-grid">
+  <div class="flow-entry-cell"><div class="flow-entry-label">ENTRY</div><div class="flow-entry-val">${cand.entry_price ? formatPrice(cand.entry_price) : '—'}</div></div>
+  <div class="flow-entry-cell"><div class="flow-entry-label">SL</div><div class="flow-entry-val" style="color:var(--red)">${cand.sl_price ? formatPrice(cand.sl_price) : '—'}</div></div>
+  <div class="flow-entry-cell"><div class="flow-entry-label">TP</div><div class="flow-entry-val" style="color:var(--teal)">${cand.tp_target ? formatPrice(cand.tp_target) : '—'}</div></div>
+</div>
+<div style="padding:4px 20px 12px;font-family:var(--font-mono);font-size:0.65rem;color:var(--ink-2)">
+  ${cand.sweep_type || ''} · Depth ${depthStr} · Vol ${volStr}
+</div>
+<div style="padding:0 20px 12px;font-family:var(--font-mono);font-size:0.65rem;color:var(--ink-3)">
+  Body: ${bodyPts}pts · Cascade: ${cascadePts}pts · RSI: ${rsiPts}pts · Bonus: ${bonusPts}pts
+</div>`;
+    }
+
+    let outcomeBlock = '';
+    if (cand && cand.outcome) {
+      const oc = cand.outcome === 'TP_HIT' ? { label:'TP HIT',  color:'var(--teal)' }
+               : cand.outcome === 'SL_HIT' ? { label:'SL HIT',  color:'var(--red)'  }
+               : cand.outcome === 'EXPIRY' ? { label:'EXPIRY',   color:'var(--ink-3)'}
+               :                            { label:'RUNNING',   color:'var(--gold)' };
+      outcomeBlock = `<div style="padding:0 20px 16px">
+  <span class="flow-badge" style="color:${oc.color};border-color:${oc.color};font-size:0.75rem;padding:4px 14px">${oc.label}</span>
+</div>`;
+    }
+
+    bodyEl.innerHTML = `
+<div style="padding:12px 20px 4px;font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.1em;color:var(--ink-3)">LIFECYCLE</div>
+${stateRows || '<div style="padding:8px 20px;color:var(--ink-3);font-family:var(--font-mono);font-size:0.7rem">No transitions logged.</div>'}
+${entryBlock}
+${outcomeBlock}`;
+  } catch(e) {
+    console.error('[FLOW] openFlowDrawer error', e);
+    bodyEl.innerHTML = '<div class="empty-state">Failed to load candidate detail.</div>';
+  }
+}
+
+function openFunnelDrawer(state, count) {
+  const drawer   = document.getElementById('drawer-funnel');
+  const overlay  = document.getElementById('overlay');
+  const title    = document.getElementById('funnel-drawer-title');
+  const subtitle = document.getElementById('funnel-drawer-subtitle');
+  const content  = document.getElementById('funnel-drawer-content');
+  const labels = {
+    'DETECTED':             'DETECTED',
+    'SWEEP_FOUND':          'SWEEP FOUND',
+    'RETEST_PENDING':       'RETEST PENDING',
+    'ACCEPTANCE_BUILDING':  'ACCEPTANCE BUILDING',
+    'ACCEPTANCE_CONFIRMED': 'CONFIRMED',
+    'EXPIRED':              'EXPIRED'
+  };
+  title.textContent    = labels[state] || state;
+  subtitle.textContent = `${count} candidate${count !== 1 ? 's' : ''}`;
+  content.innerHTML    = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
+  drawer.classList.add('open');
+  if (overlay) overlay.classList.add('open');
+  window.SA_API.request('/flow/funnel/' + state)
+    .then(res => {
+      if (!res.ok) throw res;
+      const data = res.data;
+      if (!data.candidates || data.candidates.length === 0) {
+        content.innerHTML = '<p class="empty-state">No candidates in this state.</p>';
+        return;
+      }
+      content.innerHTML = data.candidates.map(c => buildFunnelCandidateRow(c, state)).join('');
+    })
+    .catch(() => {
+      content.innerHTML = '<p class="error-state">Failed to load candidates.</p>';
+    });
+}
+
+function closeFunnelDrawer() {
+  const drawer  = document.getElementById('drawer-funnel');
+  const overlay = document.getElementById('overlay');
+  if (drawer)  drawer.classList.remove('open');
+  if (overlay) overlay.classList.remove('open');
+}
+
+function buildFunnelCandidateRow(c, state) {
+  const dirColor  = c.direction === 'LONG' ? 'var(--teal)' : 'var(--red)';
+  const age       = c.age_hours != null ? `${c.age_hours}h` : '—';
+  const score     = c.current_score != null && c.current_score > 1
+    ? `${Math.round(c.current_score)}pts` : '—';
+  const sweepInfo = c.sweep_type
+    ? `${c.sweep_type.replace('_SWEEP','')} · ${
+        c.sweep_wick_depth_pct != null
+          ? c.sweep_wick_depth_pct.toFixed(2)+'%' : '—'
+      }`
+    : 'NO SWEEP';
+  const showOutcome = (state === 'ACCEPTANCE_CONFIRMED' || state === 'EXPIRED') && c.outcome;
+  const outcomeHtml = showOutcome
+    ? `<span class="flow-badge" style="color:var(--ink-3);border-color:var(--ink-3)">${c.outcome.replace('_',' ')}</span>`
+    : '';
+  const tp = c.tp_target != null ? `TP ${c.tp_target}` : '';
+  return `
+    <div class="funnel-candidate-row"
+         onclick="closeFunnelDrawer(); setTimeout(()=>openFlowDrawer(${c.id}),200)">
+      <div class="funnel-row-top">
+        <span class="funnel-ticker">${c.ticker}</span>
+        <span class="funnel-dir" style="color:${dirColor}">${c.direction}</span>
+        ${outcomeHtml}
+      </div>
+      <div class="funnel-row-meta">
+        <span>Age: ${age}</span>
+        <span>Score: ${score}</span>
+        <span>${sweepInfo}</span>
+        ${tp ? `<span>${tp}</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function closeFlowDrawer() {
+  const drawer  = document.getElementById('drawer-flow');
+  const overlay = document.getElementById('overlay');
+  if (drawer)  drawer.classList.remove('open');
+  if (overlay) overlay.classList.remove('open');
+}
 let refreshTimer = null;
 let cache = {};
 let watchlistRaw = null;
@@ -2575,11 +3625,10 @@ function goTo(screen, btn) {
 
 function loadScreen(screen) {
   if (screen === 'board')   { loadBoard(); loadResolverFeed(); }
-  if (screen === 'pulse')   loadSignals('v1');
-  if (screen === 'rift')    loadSignals('v3');
+  if (screen === 'flow')    loadFlow();
+  if (screen === 'signals') loadSignals(currentSignalEngine);
   if (screen === 'watch')   loadWatchlist();
-  if (screen === 'profile')  loadProfile();
-  if (screen === 'pressure') loadPressureWatch();
+  if (screen === 'profile') loadProfile();
 }
 
 // ── TIMEFRAME FILTER ──────────────────────────────────────────
@@ -2678,10 +3727,41 @@ async function loadBoard() {
     // Update counts/meta and render cards (timeframe-aware)
     updateBoardCounts(ctx);
     renderBoardCards(ctx);
+    buildTickerStrip(ctx);
   } catch(e) {
     document.getElementById('board-cards').innerHTML =
       `<div class="empty-state">Unable to load market context.<br>${e.message}</div>`;
   }
+}
+
+function buildTickerStrip(ctxData) {
+  const track = document.getElementById('ticker-track');
+  if (!track) return;
+  const assets = (ctxData && ctxData.assets) ? ctxData.assets : [];
+  if (!assets.length) return;
+
+  function makeItem(asset) {
+    const symbol  = asset.symbol || asset.ticker || '';
+    const chgRaw  = parseFloat(asset.change_pct) || 0;
+    const chgPct  = chgRaw;
+    const chgStr  = (chgPct >= 0 ? '+' : '') + chgPct.toFixed(2) + '%';
+    const chgCls  = chgPct > 0.05 ? 'up' : chgPct < -0.05 ? 'down' : 'flat';
+    const el = document.createElement('div');
+    el.className = 'ticker-item';
+    el.innerHTML = '<span class="t-sym">' + symbol + '</span>' +
+                   '<span class="t-chg ' + chgCls + '">' + chgStr + '</span>';
+    el.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (typeof openDeepView === 'function') openDeepView(symbol);
+    });
+    return el;
+  }
+
+  track.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  assets.forEach(function(a) { frag.appendChild(makeItem(a)); });
+  assets.forEach(function(a) { frag.appendChild(makeItem(a)); });
+  track.appendChild(frag);
 }
 
 function renderBoardCards(ctx) {
@@ -2874,69 +3954,71 @@ function renderResolverStrip(data) {
 
 // ── LOAD SIGNALS ──────────────────────────────────────────────
 async function loadSignals(engine) {
-  const prefix = engine === 'v1' ? 'pulse' : 'rift';
+  const riftVersions = ['v3', 'v4', 'v5'];
+  const matchEngine  = s => engine === 'rift'
+    ? riftVersions.includes(s.strategy_raw)
+    : s.strategy_raw === (engine === 'pulse' ? 'v1' : engine);
+  const label = engine === 'pulse' ? 'Pulse' : engine === 'rift' ? 'Rift' : engine;
   try {
-    let data;
-    if (window.SA_API && typeof window.SA_API.getSignals === 'function') {
-      const res = await window.SA_API.getSignals({ engine });
-      if (!res.ok) throw res;
-      data = res.data;
-    } else {
-      data = await api('/signals');
-    }
+    const res = await window.SA_API.request('/signals');
+    if (!res.ok) throw res;
+    const data = res.data;
     cache.signals = data;
 
-    const active = (data.active || []).filter(s => s.strategy_raw === engine);
-    const closed = (data.closed || []).filter(s => s.strategy_raw === engine);
+    const active = (data.active || []).filter(matchEngine);
+    const closed = (data.closed || []).filter(matchEngine);
 
-    // All-time per-engine stats from server
     const serverStats = data.stats || {};
-    const winRate  = serverStats.win_rate ?? 0;
-    const netPnl   = serverStats.net_pnl  ?? 0;
-    const total    = serverStats.total     ?? 0;
+    const winRate = serverStats.win_rate ?? 0;
+    const netPnl  = serverStats.net_pnl  ?? 0;
+    const total   = serverStats.total    ?? 0;
 
-    const rrVals   = [...active, ...closed]
+    const rrVals = [...active, ...closed]
       .filter(s => s.entry > 0 && s.tp > 0 && s.sl > 0)
       .map(s => s.direction === 'BUY'
         ? (s.tp - s.entry) / (s.entry - s.sl)
         : (s.entry - s.tp) / (s.sl - s.entry))
       .filter(rr => rr > 0 && isFinite(rr));
-    const avg_rr   = rrVals.length > 0
+    const avg_rr = rrVals.length > 0
       ? Math.round(rrVals.reduce((a, b) => a + b, 0) / rrVals.length * 100) / 100 : 0;
 
-    document.getElementById(`${prefix}-meta`).textContent =
-      `All-time · ${total} signals`;
+    const metaEl = document.getElementById('signals-meta');
+    if (metaEl) metaEl.textContent = `${label} · All-time · ${total} signals`;
 
-    const wrEl = document.getElementById(`stat-${prefix}-winrate`);
-    wrEl.textContent = `${winRate}%`;
-    wrEl.style.color = 'var(--ink)';
-    document.getElementById(`stat-${prefix}-pnl`).textContent   = `${netPnl >= 0 ? '+' : ''}${netPnl}%`;
-    document.getElementById(`stat-${prefix}-count`).textContent = total;
-    document.getElementById(`stat-${prefix}-rr`).textContent    = avg_rr > 0 ? avg_rr.toFixed(2) : '—';
+    const wrEl = document.getElementById('stat-signals-winrate');
+    if (wrEl) { wrEl.textContent = `${winRate}%`; wrEl.style.color = 'var(--ink)'; }
+    const pnlEl = document.getElementById('stat-signals-pnl');
+    if (pnlEl) pnlEl.textContent = `${netPnl >= 0 ? '+' : ''}${netPnl}%`;
+    const cntEl = document.getElementById('stat-signals-count');
+    if (cntEl) cntEl.textContent = total;
+    const rrEl = document.getElementById('stat-signals-rr');
+    if (rrEl) rrEl.textContent = avg_rr > 0 ? avg_rr.toFixed(2) : '—';
 
-    const activeEl = document.getElementById(`${prefix}-active`);
-    activeEl.innerHTML = active.length
+    const activeEl = document.getElementById('signals-active');
+    if (activeEl) activeEl.innerHTML = active.length
       ? active.map(s => buildSignalRow(s, 'RUNNING')).join('')
       : '<div class="empty-state">No active signals.</div>';
 
-    const closedEl = document.getElementById(`${prefix}-closed`);
-    closedEl.innerHTML = closed.length
+    const closedEl = document.getElementById('signals-closed');
+    if (closedEl) closedEl.innerHTML = closed.length
       ? closed.map(s => buildSignalRow(s, s.outcome)).join('')
       : '<div class="empty-state">No closed signals.</div>';
 
-    document.getElementById(`${prefix}-footer`).textContent =
-      `— End of ${engine === 'v1' ? 'Pulse' : 'Rift'} Log —`;
+    const footEl = document.getElementById('signals-footer');
+    if (footEl) footEl.textContent = `— End of ${label} Log —`;
 
   } catch(e) {
-    document.getElementById(`${prefix}-meta`).textContent       = 'Session window · —';
-    document.getElementById(`stat-${prefix}-winrate`).textContent = '—';
-    document.getElementById(`stat-${prefix}-pnl`).textContent    = '—';
-    document.getElementById(`stat-${prefix}-count`).textContent  = '—';
-    document.getElementById(`stat-${prefix}-rr`).textContent     = '—';
-    document.getElementById(`${prefix}-active`).innerHTML =
-      '<div class="empty-state">No active signals.</div>';
-    document.getElementById(`${prefix}-closed`).innerHTML =
-      '<div class="empty-state">No closed signals.</div>';
+    console.error('[SIGNALS] loadSignals error', e);
+    const metaEl = document.getElementById('signals-meta');
+    if (metaEl) metaEl.textContent = 'Session window · —';
+    ['winrate','pnl','count','rr'].forEach(k => {
+      const el = document.getElementById(`stat-signals-${k}`);
+      if (el) el.textContent = '—';
+    });
+    const activeEl = document.getElementById('signals-active');
+    if (activeEl) activeEl.innerHTML = '<div class="empty-state">No active signals.</div>';
+    const closedEl = document.getElementById('signals-closed');
+    if (closedEl) closedEl.innerHTML = '<div class="empty-state">No closed signals.</div>';
   }
 }
 
@@ -3330,6 +4412,10 @@ async function openDeepView(symbol) {
   document.getElementById('deep-history').innerHTML = '<div class="loading-row"><div class="spinner"></div>Loading…</div>';
   document.getElementById('deep-reading-result').classList.remove('visible');
   document.getElementById('deep-reading-body').textContent = '';
+  const vb = document.getElementById('vol-metrics-block');
+  if (vb) vb.style.display = 'none';
+  const _es0 = document.getElementById('deep-extra-sections');
+  if (_es0) { _es0.innerHTML = ''; _es0.style.display = 'none'; }
 
   overlay.classList.add('open');
   drawer.classList.add('open');
@@ -3425,6 +4511,63 @@ async function openDeepView(symbol) {
       rsiV === 'BULLISH'    ? 'Bullish — upward bias' :
       rsiV === 'BEARISH'    ? 'Bearish — downward bias' :
       rsiV === 'NEUTRAL'    ? 'Neutral — no bias' : rsiV;
+
+    // Extra sections — indicators, volume breakout, recent outcomes
+    try {
+      const _ind = ctx.indicators || {};
+      const _vb  = ctx.volume_breakout || {};
+      const _ro  = ctx.recent_outcomes || {};
+      let _xHtml = '';
+
+      if (_ind.ema21 != null || _ind.rsi14 != null) {
+        _xHtml += '<div class="deep-section">'
+          + '<div class="deep-section-eyebrow">INDICATORS</div>'
+          + '<div class="dv-row"><span class="dv-key">EMA 21</span><span class="dv-val">'
+          + (_ind.ema21 != null ? Number(_ind.ema21).toFixed(4) : '\u2014') + '</span></div>'
+          + '<div class="dv-row"><span class="dv-key">EMA 100</span><span class="dv-val">'
+          + (_ind.ema100 != null ? Number(_ind.ema100).toFixed(4) : '\u2014') + '</span></div>'
+          + '<div class="dv-row"><span class="dv-key">RSI 14</span><span class="dv-val">'
+          + (_ind.rsi14 != null ? Number(_ind.rsi14).toFixed(1) : '\u2014') + '</span></div>'
+          + '<div class="dv-row"><span class="dv-key">ATR at fire</span><span class="dv-val">'
+          + (_ind.atr_at_fire != null ? Number(_ind.atr_at_fire).toFixed(4) : '\u2014') + '</span></div>'
+          + '</div>';
+      }
+
+      if (_vb.active) {
+        var _fat = _vb.fired_at
+          ? new Date((_vb.fired_at.endsWith('Z') ? _vb.fired_at : _vb.fired_at + 'Z'))
+              .toLocaleTimeString('en-GB', {hour:'2-digit', minute:'2-digit'}) + ' UTC'
+          : 'Active';
+        _xHtml += '<div class="deep-section" style="border-left:2px solid #FFB700;padding-left:8px">'
+          + '<div class="deep-section-eyebrow">VOLUME BREAKOUT '
+          + '<span class="vb-badge" style="margin-left:8px">VOL SPIKE</span></div>'
+          + '<div class="dv-row"><span class="dv-key">Detected</span>'
+          + '<span class="dv-val" style="color:#FFB700">' + _fat + '</span></div>'
+          + '<div class="dv-row"><span class="dv-key">Mode</span>'
+          + '<span class="dv-val" style="color:var(--ink-3)">Shadow (observing)</span></div>'
+          + '</div>';
+      }
+
+      var _roKeys = Object.keys(_ro);
+      if (_roKeys.length > 0) {
+        var _roRows = '';
+        _roKeys.forEach(function(eng) {
+          var _r   = _ro[eng];
+          var _lbl = eng === 'v1' ? 'Pulse' : 'Rift';
+          var _oc  = _r.outcome === 'TP_HIT' ? 'var(--teal)'
+                   : _r.outcome === 'SL_HIT' ? 'var(--red)' : 'var(--ink-3)';
+          _roRows += '<div class="dv-row"><span class="dv-key">' + _lbl + '</span>'
+            + '<span class="dv-val" style="color:' + _oc + '">' + _r.outcome.replace('_', ' ')
+            + '<span style="opacity:0.5;font-size:9px;margin-left:4px">SL ' + _r.sl_pct + '%</span>'
+            + '</span></div>';
+        });
+        _xHtml += '<div class="deep-section"><div class="deep-section-eyebrow">LAST OUTCOME</div>'
+          + _roRows + '</div>';
+      }
+
+      var _esEl = document.getElementById('deep-extra-sections');
+      if (_esEl) { _esEl.innerHTML = _xHtml; _esEl.style.display = _xHtml ? 'block' : 'none'; }
+    } catch(_xe) { /* extra sections non-fatal */ }
 
   } catch {}
 
@@ -3553,6 +4696,30 @@ async function readMarketState() {
     const data = await api(`/context-reading/${sym}`);
     body.textContent = data.reading || 'No reading available.';
     result.classList.add('visible');
+    // Volume Intelligence display
+    const volBlock = document.getElementById('vol-metrics-block');
+    if (volBlock) {
+      if (data.volume) {
+        const v = data.volume;
+        const rvolEl  = document.getElementById('vol-rvol');
+        const trendEl = document.getElementById('vol-trend');
+        const surgeEl = document.getElementById('vol-surge');
+        const divEl   = document.getElementById('vol-divergence');
+        if (rvolEl)  rvolEl.textContent  = (v.rvol != null ? v.rvol + 'x' : '—');
+        if (trendEl) trendEl.textContent = v.vol_trend || '—';
+        if (surgeEl) {
+          surgeEl.textContent = v.volume_surge ? 'YES' : 'NO';
+          surgeEl.className = 'vol-value ' + (v.volume_surge ? 'vol-surge-true' : 'vol-surge-false');
+        }
+        if (divEl) {
+          divEl.textContent = v.divergence ? 'YES' : 'NO';
+          divEl.className = 'vol-value ' + (v.divergence ? 'vol-div-true' : 'vol-surge-false');
+        }
+        volBlock.style.display = 'block';
+      } else {
+        volBlock.style.display = 'none';
+      }
+    }
   } catch (e) {
     body.textContent = 'Context reading unavailable at this time.';
     result.classList.add('visible');
@@ -3567,6 +4734,10 @@ function closeAllDrawers() {
   document.getElementById('overlay').classList.remove('open');
   document.getElementById('drawer-deep').classList.remove('open');
   document.getElementById('drawer-state').classList.remove('open');
+  const df = document.getElementById('drawer-flow');
+  if (df) df.classList.remove('open');
+  const dfn = document.getElementById('drawer-funnel');
+  if (dfn) dfn.classList.remove('open');
   document.getElementById('deep-reading-result').classList.remove('visible');
   document.getElementById('deep-reading-body').textContent = '';
 }
@@ -3690,9 +4861,10 @@ let pwCurrentFilter = 'ALL';
 let pwAllAssets = [];
 
 function loadPressureWatch() {
-  fetch('/api/mobile/watchlist/live', { headers: { 'X-Invite-Code': CODE } })
-    .then(r => r.json())
-    .then(data => {
+  window.SA_API.request('/watchlist/live')
+    .then(res => {
+      if (!res.ok) throw res;
+      const data = res.data;
       // watchlist/live returns data.groups (dict by state) — flatten to array
       const allGroups = data.groups || {};
       const assets = Object.values(allGroups).flat();
@@ -3720,7 +4892,8 @@ function loadPressureWatch() {
 
       renderPressureList();
     })
-    .catch(() => {
+    .catch(err => {
+      console.error('[Pressure Watch] Load failed:', err);
       document.getElementById('pw-list').innerHTML =
         '<div style="padding:24px;text-align:center;color:var(--ink-3);' +
         'font-family:var(--font-mono);font-size:0.75rem;">LOAD ERROR</div>';
@@ -3746,19 +4919,19 @@ function buildPressureCard(a) {
   const ctx   = a.context || {};
   const state = a.pressure_state || 'LOW';
   const score = a.pressure_score  || 0;
-  const comp  = ctx.compression != null ? ctx.compression.toFixed(2) : '\u2014';
-  const exp   = ctx.expansion   != null ? ctx.expansion.toFixed(2)   : '\u2014';
+  const comp  = ctx.compression != null ? parseFloat(ctx.compression).toFixed(2) : '\u2014';
+  const exp   = ctx.expansion   != null ? parseFloat(ctx.expansion).toFixed(2)   : '\u2014';
   const rsi   = ctx.rsi_stage   || '\u2014';
   const sweep = ctx.sweep;
   const symbol = a.symbol || '';
 
   // Quality row — only render if Phase 3 data is available
   const rejStr  = ctx.rejection_strength  != null
-                  ? ctx.rejection_strength.toFixed(2)  : null;
+                  ? parseFloat(ctx.rejection_strength).toFixed(2)  : null;
   const bqStr   = ctx.breakout_quality    != null
-                  ? ctx.breakout_quality.toFixed(2)    : null;
+                  ? parseFloat(ctx.breakout_quality).toFixed(2)    : null;
   const spStr   = ctx.sweep_probability   != null
-                  ? ctx.sweep_probability.toFixed(2)   : null;
+                  ? parseFloat(ctx.sweep_probability).toFixed(2)   : null;
 
   const hasQuality = rejStr !== null || bqStr !== null;
 
@@ -3794,6 +4967,7 @@ function buildPressureCard(a) {
       <div class="pw-card-header">
         <span class="pw-ticker">${symbol}</span>
         <span class="pw-state-badge ${state}">${state}</span>
+        ${a.volume_breakout ? '<span class="vb-badge">VOL SPIKE</span>' : ''}
       </div>
       <div class="pw-card-row">
         <div class="pw-field">
@@ -3814,6 +4988,26 @@ function buildPressureCard(a) {
       ${sweepHtml}
     </div>`;
 }
+
+// SA GATE CHECK
+async function checkGateAndInit() {
+  try {
+    const res  = await fetch('/api/gate');
+    const data = await res.json();
+    if (data.open === true) {
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('app').style.display   = 'flex';
+      document.getElementById('app').style.flexDirection = 'column';
+      initDashboard();
+      return;
+    }
+  } catch (e) {
+    // fail-closed: gate endpoint unreachable → treat as locked
+  }
+  // Gate closed — default login screen is already visible
+}
+
+document.addEventListener('DOMContentLoaded', checkGateAndInit);
 
 document.addEventListener('DOMContentLoaded', () => {
   const pwf = document.querySelector('.pw-filters');
